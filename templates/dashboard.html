@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Dispatch — Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0f1117;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', sans-serif;
+            padding: 32px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+        }
+        h1 { font-size: 1.8rem; color: #fff; }
+        h1 span { color: #f5a623; }
+        a.upload-new {
+            color: #f5a623;
+            font-size: 0.9rem;
+            text-decoration: none;
+        }
+        .cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 40px;
+        }
+        .card {
+            background: #161822;
+            border-radius: 10px;
+            padding: 20px;
+            border: 1px solid #1f2230;
+        }
+        .card .label {
+            font-size: 0.75rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 8px;
+        }
+        .card .value {
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+        .card .value.red { color: #ef4444; }
+        .card .value.green { color: #22c55e; }
+        h2 {
+            font-size: 1.1rem;
+            color: #9ca3af;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 40px;
+            font-size: 0.9rem;
+        }
+        th {
+            text-align: left;
+            padding: 10px 14px;
+            background: #161822;
+            color: #6b7280;
+            font-weight: 600;
+            border-bottom: 1px solid #1f2230;
+        }
+        td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #1a1d2a;
+            color: #d1d5db;
+        }
+        tr:hover td { background: #161822; }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge.working { background: #14532d; color: #4ade80; }
+        .badge.idle { background: #1f2937; color: #9ca3af; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>The <span>Dispatch</span></h1>
+        <a class="upload-new" href="/">↑ Upload new save</a>
+    </header>
+
+    <!-- Overview Cards -->
+    <div class="cards">
+        <div class="card">
+            <div class="label">Cash on Hand</div>
+            <div class="value green">${{ '{:,}'.format(data.finances.money) }}</div>
+        </div>
+        <div class="card">
+            <div class="label">Total Debt</div>
+            <div class="value red">${{ '{:,}'.format(data.finances.total_debt) }}</div>
+        </div>
+        <div class="card">
+            <div class="label">Active Loans</div>
+            <div class="value">{{ data.finances.loans | length }}</div>
+        </div>
+        <div class="card">
+            <div class="label">Experience</div>
+            <div class="value">{{ '{:,}'.format(data.player.experience_points) }}</div>
+        </div>
+        <div class="card">
+            <div class="label">Distance Driven</div>
+            <div class="value">{{ '{:,}'.format(data.player.total_distance_km) }} km</div>
+        </div>
+        <div class="card">
+            <div class="label">Drivers</div>
+            <div class="value">{{ data.drivers | length }}</div>
+        </div>
+    </div>
+
+    <!-- Drivers Table -->
+    <h2>Drivers</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Hometown</th>
+                <th>Current City</th>
+                <th>XP</th>
+                <th>ADR</th>
+                <th>Long Dist</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for driver in data.drivers[:50] %}
+            <tr>
+                <td>{{ driver.id }}</td>
+                <td>{{ driver.hometown }}</td>
+                <td>{{ driver.current_city }}</td>
+                <td>{{ '{:,}'.format(driver.experience_points) }}</td>
+                <td>{{ driver.adr }}</td>
+                <td>{{ driver.long_dist }}</td>
+                <td>
+                    {% if driver.state == 2 %}
+                        <span class="badge working">On Job</span>
+                    {% else %}
+                        <span class="badge idle">Idle</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Recent Jobs -->
+    <h2>Recent Jobs</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Cargo</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Revenue</th>
+                <th>Wage</th>
+                <th>Fuel</th>
+                <th>Distance</th>
+                <th>Day</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for job in data.jobs[:30] %}
+            <tr>
+                <td>{{ job.cargo }}</td>
+                <td>{{ job.source_city }}</td>
+                <td>{{ job.destination_city }}</td>
+                <td class="green">${{ '{:,}'.format(job.revenue) }}</td>
+                <td>${{ '{:,}'.format(job.wage) }}</td>
+                <td>${{ '{:,}'.format(job.fuel) }}</td>
+                <td>{{ job.distance_km }} km</td>
+                <td>{{ job.day }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

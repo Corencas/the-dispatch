@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Dispatch</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0f1117;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .upload-box {
+            text-align: center;
+            padding: 60px 80px;
+            border: 2px dashed #2a2d3a;
+            border-radius: 12px;
+            background: #161822;
+        }
+        h1 {
+            font-size: 2.4rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #ffffff;
+        }
+        h1 span { color: #f5a623; }
+        p {
+            color: #6b7280;
+            margin-bottom: 32px;
+            font-size: 0.95rem;
+        }
+        .upload-btn {
+            display: inline-block;
+            background: #f5a623;
+            color: #0f1117;
+            padding: 12px 32px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            border: none;
+        }
+        .upload-btn:hover { background: #e09516; }
+        input[type="file"] { display: none; }
+        .note {
+            margin-top: 20px;
+            font-size: 0.8rem;
+            color: #4b5563;
+        }
+    </style>
+</head>
+<body>
+    <div class="upload-box">
+        <h1>The <span>Dispatch</span></h1>
+        <p>Upload your decrypted ATS save file to view your company dashboard.</p>
+        <form method="POST" enctype="multipart/form-data">
+            <label class="upload-btn" for="savefile">Upload game-decoded.sii</label>
+            <input type="file" id="savefile" name="savefile" accept=".sii" onchange="this.form.submit()">
+        </form>
+        <p class="note">Your file is processed locally and never stored permanently.</p>
+    </div>
+</body>
+</html>

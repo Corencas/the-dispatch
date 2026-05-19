@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% include '_head.html' %}
+    <title>VTC Management · The Dispatch</title>
+</head>
+<body>
+<div class="app-layout">
+
+<aside class="sidebar">{% include '_sidebar.html' %}</aside>
+
+<div class="app-main">
+<div class="app-content">
+
+    <div class="content-header">
+        <div>
+            <h1 class="content-title">My VTC</h1>
+            <div class="content-subtitle">Virtual Trucking Company</div>
+        </div>
+    </div>
+
+    {% if error %}
+    <div class="error-bar">⚠ {{ error }}</div>
+    {% endif %}
+
+    {% if not discord_id %}
+
+    <div class="no-data-state">
+        <h2>Sign In Required</h2>
+        <p>Create or join a Virtual Trucking Company. Sign in with Discord — no password needed.</p>
+        <a href="/auth/login?next=/vtc" class="btn btn-amber">Sign In with Discord</a>
+    </div>
+
+    {% elif vtc %}
+
+    <div class="sec-label">Your VTC</div>
+
+    <div class="vtc-hero">
+        <div class="vtc-hero-hd">
+            <div>
+                <div class="vtc-tag-big">[{{ vtc.tag }}]</div>
+                <div class="vtc-name-big">{{ vtc.name }}</div>
+                <div class="vtc-meta">
+                    {{ vtc.members | length }} MEMBER{% if vtc.members | length != 1 %}S{% endif %} &nbsp;·&nbsp;
+                    SINCE <span>{{ vtc.created_at.strftime('%Y-%m-%d') }}</span>
+                    {% if vtc.owner_discord_id == discord_id %}
+                    &nbsp;·&nbsp; <span style="color:var(--amber)">OWNER</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div style="text-align:right">
+                <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:3px">VTC ID</div>
+                <div style="font-size:16px;font-weight:700;color:var(--text-secondary)">#{{ vtc.id }}</div>
+            </div>
+        </div>
+
+        <div class="vtc-access-block">
+            <div>
+                <div class="access-lbl">Access Code — Share to Invite Drivers</div>
+                <div class="access-code" id="access-code">{{ vtc.access_code }}</div>
+            </div>
+            <div class="access-note">Members enter this code at the VTC page to join your fleet.</div>
+            <button class="copy-btn" onclick="copyCode()">Copy Code</button>
+        </div>
+
+        <div class="vtc-actions">
+            <a href="/vtc/{{ vtc.id }}" class="btn btn-amber">Fleet Dashboard →</a>
+            <form method="POST" action="/vtc/leave" style="display:inline" onsubmit="return confirm('Leave this VTC?')">
+                <button class="btn btn-danger" type="submit">Leave VTC</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="sec-label">Members — {{ vtc.members | length }} Total</div>
+    <div class="member-grid-wrap">
+        {% for m in vtc.members %}
+        <div class="member-card {% if m.snapshots %}online{% endif %}">
+            <div class="mc-name">
+                {{ m.discord_username }}
+                {% if m.discord_id == vtc.owner_discord_id %}
+                    <span class="badge badge-amber" style="font-size:0.48rem">OWNER</span>
+                {% else %}
+                    <span class="badge badge-muted" style="font-size:0.48rem">DRIVER</span>
+                {% endif %}
+            </div>
+            {% set snap = m.snapshots | sort(attribute='captured_at') | last if m.snapshots else none %}
+            {% if snap %}
+            <div class="mc-stats">
+                <div class="mc-stat">DIST <span>{{ '{:,}'.format(snap.total_distance_km or 0) }} km</span></div>
+                <div class="mc-stat">XP <span>{{ '{:,}'.format(snap.experience_points or 0) }}</span></div>
+            </div>
+            {% else %}
+            <div class="mc-nodata">No data — client not connected</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
+    {% else %}
+
+    <div class="sec-label">Join or Create</div>
+
+    <div class="two-col">
+        <div class="form-panel">
+            <div class="form-panel-title">Create a VTC</div>
+            <div class="form-panel-desc">Start your own Virtual Trucking Company. You'll receive an access code to share with your drivers.</div>
+            <form method="POST" action="/vtc/create">
+                <div class="field">
+                    <label for="vtc-name">VTC Name</label>
+                    <input type="text" id="vtc-name" name="name" placeholder="Iron Road Logistics" maxlength="64" required>
+                </div>
+                <div class="field">
+                    <label for="vtc-tag">Tag (2–6 chars)</label>
+                    <input type="text" id="vtc-tag" name="tag" placeholder="IRL" maxlength="6" style="text-transform:uppercase" required>
+                    <div class="field-hint">Displayed as [IRL] next to your VTC name</div>
+                </div>
+                <button class="btn btn-amber" type="submit" style="width:100%;justify-content:center">Create VTC →</button>
+            </form>
+        </div>
+
+        <div class="form-panel" style="border-left:1px solid var(--border)">
+            <div class="form-panel-title">Join a VTC</div>
+            <div class="form-panel-desc">Enter the 6-character access code your VTC owner shared with you to join their fleet.</div>
+            <form method="POST" action="/vtc/join">
+                <div class="field">
+                    <label for="join-code">Access Code</label>
+                    <input type="text" id="join-code" name="access_code" placeholder="XK7F2A" maxlength="6" style="text-transform:uppercase;letter-spacing:0.05em;font-size:1rem" required>
+                    <div class="field-hint">6-character code — ask your VTC owner</div>
+                </div>
+                <div style="margin-bottom:16px"></div>
+                <button class="btn btn-ghost" type="submit" style="width:100%;justify-content:center">Join VTC →</button>
+            </form>
+        </div>
+    </div>
+
+    {% endif %}
+
+</div><!-- /app-content -->
+
+<div class="statusbar">
+    <span>THE DISPATCH <span class="sb-val">VTC SYSTEM</span></span>
+    {% if discord_username %}
+    <span><span class="sb-val">{{ discord_username }}</span></span>
+    {% endif %}
+    <span>v0.3.0</span>
+</div>
+</div><!-- /app-main -->
+
+</div><!-- /app-layout -->
+
+<script>
+function copyCode() {
+    const code = document.getElementById('access-code').textContent.trim();
+    navigator.clipboard.writeText(code).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        const orig = btn.textContent;
+        btn.textContent = '✓ Copied';
+        btn.style.color = 'var(--green)';
+        btn.style.borderColor = 'rgba(34,197,94,0.4)';
+        setTimeout(() => {
+            btn.textContent = orig;
+            btn.style.color = '';
+            btn.style.borderColor = '';
+        }, 1800);
+    });
+}
+
+const tagInput = document.getElementById('vtc-tag');
+if (tagInput) tagInput.addEventListener('input', () => { tagInput.value = tagInput.value.toUpperCase(); });
+
+const codeInput = document.getElementById('join-code');
+if (codeInput) codeInput.addEventListener('input', () => { codeInput.value = codeInput.value.toUpperCase(); });
+</script>
+</body>
+</html>

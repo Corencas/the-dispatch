@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% include '_head.html' %}
+    <title>{% if scope == 'vtc' %}[{{ vtc.tag }}] {{ vtc.name }} — Leaderboard{% else %}Global Leaderboard{% endif %} · The Dispatch</title>
+</head>
+<body>
+<div class="app-layout">
+
+<aside class="sidebar">{% include '_sidebar.html' %}</aside>
+
+<div class="app-main">
+<div class="app-content">
+
+    <div class="content-header">
+        <div>
+            <h1 class="content-title">
+                {% if scope == 'vtc' %}[{{ vtc.tag }}] Leaderboard{% else %}Leaderboard{% endif %}
+            </h1>
+            <div class="content-subtitle">
+                {% if scope == 'vtc' %}{{ vtc.name }} · {% endif %}
+                {{ rows | length }} driver{% if rows | length != 1 %}s{% endif %} ranked · sorted by {{ sort }}
+            </div>
+        </div>
+        <div class="content-actions">
+            {% if scope == 'vtc' %}
+            <a href="/leaderboard?sort={{ sort }}" class="btn btn-ghost btn-sm">Global</a>
+            <a href="/vtc/{{ vtc.id }}" class="btn btn-ghost btn-sm">Fleet →</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="sort-bar">
+        <span class="sort-lbl">Sort</span>
+        {% if scope == 'vtc' %}
+            {% set base = '/leaderboard/vtc/' ~ vtc.id %}
+        {% else %}
+            {% set base = '/leaderboard' %}
+        {% endif %}
+        <a class="sort-tab {% if sort == 'distance' %}active{% endif %}" href="{{ base }}?sort=distance">Distance</a>
+        <a class="sort-tab {% if sort == 'jobs' %}active{% endif %}" href="{{ base }}?sort=jobs">Jobs</a>
+        <a class="sort-tab {% if sort == 'earnings' %}active{% endif %}" href="{{ base }}?sort=earnings">Earnings</a>
+    </div>
+
+    <div class="panel" style="animation: fadeUp 0.3s both">
+        <div class="panel-hd">
+            <div class="panel-title">
+                {% if sort == 'distance' %}Distance Rankings
+                {% elif sort == 'jobs' %}Job Count Rankings
+                {% else %}Earnings Rankings{% endif %}
+            </div>
+            <div class="panel-badge">{{ rows | length }} DRIVER{% if rows | length != 1 %}S{% endif %}</div>
+        </div>
+        <div class="tbl-wrap" style="max-height:none">
+            {% if rows %}
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:52px">#</th>
+                        <th>Driver</th>
+                        {% if scope == 'global' %}<th>VTC</th>{% endif %}
+                        <th class="num {% if sort == 'distance' %}sorted{% endif %}">Distance</th>
+                        <th class="num {% if sort == 'jobs' %}sorted{% endif %}">Jobs</th>
+                        <th class="num {% if sort == 'earnings' %}sorted{% endif %}">Earnings</th>
+                        <th class="num">XP</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr {% if row.discord_id == discord_id %}class="me"{% endif %}>
+                        <td>
+                            {% if row.rank == 1 %}
+                                <span class="rank-medal" style="color:#f5a623" title="1st">▲</span>
+                            {% elif row.rank == 2 %}
+                                <span class="rank-medal" style="color:var(--text-secondary)" title="2nd">▲</span>
+                            {% elif row.rank == 3 %}
+                                <span class="rank-medal" style="color:#9a7a5a" title="3rd">▲</span>
+                            {% else %}
+                                <span class="rank-num">{{ '%03d' % row.rank }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="driver-name">{{ row.discord_username }}</span>
+                            {% if row.discord_id == discord_id %}
+                                <span class="you-tag">YOU</span>
+                            {% endif %}
+                        </td>
+                        {% if scope == 'global' %}
+                        <td>
+                            {% if row.vtc_tag %}
+                                <span class="vtc-chip">{{ row.vtc_tag }}</span>
+                            {% else %}
+                                <span style="color:var(--text-muted);font-size:13px">—</span>
+                            {% endif %}
+                        </td>
+                        {% endif %}
+                        <td class="num" {% if sort == 'distance' %}style="color:var(--text-primary)"{% endif %}>
+                            {{ '{:,}'.format(row.total_distance_km) }}<span class="val-unit">km</span>
+                        </td>
+                        <td class="num" {% if sort == 'jobs' %}style="color:var(--amber)"{% endif %}>
+                            {{ '{:,}'.format(row.job_count) }}
+                        </td>
+                        <td class="num" {% if sort == 'earnings' %}style="color:var(--green)"{% endif %}>
+                            ${{ '{:,}'.format(row.total_revenue) }}
+                        </td>
+                        <td class="num">{{ '{:,}'.format(row.experience_points) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state"><p>No data yet — connect the client to start logging runs</p></div>
+            {% endif %}
+        </div>
+    </div>
+
+</div><!-- /app-content -->
+
+<div class="statusbar">
+    <span>THE DISPATCH <span class="sb-val">LEADERBOARD</span></span>
+    <span>{{ rows | length }} driver{% if rows | length != 1 %}s{% endif %} · {{ sort }}</span>
+    <span>
+        {% if discord_id %}
+        <span style="color:var(--green)">●</span>&nbsp;<span class="sb-val">{{ discord_username }}</span>
+        {% else %}
+        <a href="/auth/login" style="color:var(--amber);font-size:13px;font-weight:600">Sign In with Discord</a>
+        {% endif %}
+    </span>
+</div>
+</div><!-- /app-main -->
+
+</div><!-- /app-layout -->
+</body>
+</html>

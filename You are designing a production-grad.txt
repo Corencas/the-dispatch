@@ -1,0 +1,53 @@
+You are designing a production-grade web dashboard for "The Dispatch" — a fleet management system for American Truck Simulator players. The dashboard is built with Flask/Jinja2 templating (HTML/CSS/JS only, no React).
+
+CONTEXT:
+- Users are ATS players managing trucking companies with hired drivers
+- The aesthetic should feel like real dispatch/logistics software — think industrial, utilitarian, high-information density
+- Dark theme only. Think mission control, not SaaS startup
+- The vibe: a real trucking dispatcher's screen at 2am
+
+DATA AVAILABLE (via Jinja2 variables):
+- data.finances.money — integer, player cash
+- data.finances.total_debt — integer, total loan debt
+- data.finances.loans — list of {amount, original_amount, duration}
+- data.player.experience_points — integer
+- data.player.total_distance_km — integer
+- data.player.game_time_minutes — integer
+- data.drivers — list of {id, hometown, current_city, experience_points, state, adr, long_dist, heavy, fragile, urgent, mechanical} — state 2 = on job
+- data.jobs — list of {revenue, wage, fuel, maintenance, distance_km, cargo, source_city, destination_city, source_company, destination_company, day} — sorted newest first
+
+DESIGN REQUIREMENTS:
+1. Top navigation bar with logo "The Dispatch" and live status indicator
+2. Overview stat cards: cash, debt, net position, XP, distance, driver count
+3. Driver roster table with skill visualization (pip/bar system), status badges, city info
+4. Recent job feed showing route, revenue, cargo, distance
+5. Loan breakdown showing remaining balance and payoff progress
+6. All numbers formatted with commas
+7. Cities formatted: replace underscores with spaces, title case
+8. Driver IDs shown as "Driver 144" not "driver.144"
+9. Filter/sort controls on the driver table
+10. A summary bar at the bottom showing active vs idle drivers
+
+TECHNICAL CONSTRAINTS:
+- Pure HTML/CSS/JS — no external JS frameworks
+- Google Fonts are fine
+- Jinja2 template syntax: {% for %}, {{ variable }}, {% if %}
+- Must handle empty states gracefully (no city = show "—")
+- Scrollable driver table (max height) so page doesn't get too long
+
+AESTHETIC DIRECTION:
+- Font: Something bold and industrial — like signage on a truck stop or highway billboard
+- Colors: Very dark background, amber/orange accent (like truck marker lights), green for revenue, red for debt
+- Visual references: CB radio displays, weigh station screens, DOT compliance boards, interstate highway signage
+- Design elements: Think mile markers, route shields, load manifests, bill of lading forms
+- Sharp corners, heavy borders, stencil-style typography
+- Data should feel like it's printed on a manifest or cargo sheet
+- Noise/grain texture for depth — like worn industrial equipment
+- Status indicators that look like dashboard warning lights
+- Driver IDs should feel like unit numbers on the side of a truck cab
+- Job feed should feel like a dispatch radio log
+- High information density — this is a working tool used by someone who drives for a living, not a Silicon Valley app
+- No gradients, no rounded corners, no soft shadows — everything is hard edges and function
+- Micro-animations on load but subtle — this isn't a portfolio piece, it's a work tool
+
+Produce a single complete HTML file with all CSS embedded in a <style> tag. Make it genuinely look like something a professional logistics company would use. No generic AI dashboard aesthetics.

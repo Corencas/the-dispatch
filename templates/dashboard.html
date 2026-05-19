@@ -1,192 +1,291 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>The Dispatch — Dashboard</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            background: #0f1117;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', sans-serif;
-            padding: 32px;
-        }
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 32px;
-        }
-        h1 { font-size: 1.8rem; color: #fff; }
-        h1 span { color: #f5a623; }
-        a.upload-new {
-            color: #f5a623;
-            font-size: 0.9rem;
-            text-decoration: none;
-        }
-        .cards {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 16px;
-            margin-bottom: 40px;
-        }
-        .card {
-            background: #161822;
-            border-radius: 10px;
-            padding: 20px;
-            border: 1px solid #1f2230;
-        }
-        .card .label {
-            font-size: 0.75rem;
-            color: #6b7280;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 8px;
-        }
-        .card .value {
-            font-size: 1.6rem;
-            font-weight: 700;
-            color: #ffffff;
-        }
-        .card .value.red { color: #ef4444; }
-        .card .value.green { color: #22c55e; }
-        h2 {
-            font-size: 1.1rem;
-            color: #9ca3af;
-            margin-bottom: 16px;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 40px;
-            font-size: 0.9rem;
-        }
-        th {
-            text-align: left;
-            padding: 10px 14px;
-            background: #161822;
-            color: #6b7280;
-            font-weight: 600;
-            border-bottom: 1px solid #1f2230;
-        }
-        td {
-            padding: 10px 14px;
-            border-bottom: 1px solid #1a1d2a;
-            color: #d1d5db;
-        }
-        tr:hover td { background: #161822; }
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-        .badge.working { background: #14532d; color: #4ade80; }
-        .badge.idle { background: #1f2937; color: #9ca3af; }
-    </style>
+    {% include '_head.html' %}
+    <title>{{ discord_username }} — Dashboard · The Dispatch</title>
 </head>
 <body>
-    <header>
-        <h1>The <span>Dispatch</span></h1>
-        <a class="upload-new" href="/">↑ Upload new save</a>
-    </header>
+<div class="app-layout">
 
-    <!-- Overview Cards -->
-    <div class="cards">
-        <div class="card">
-            <div class="label">Cash on Hand</div>
-            <div class="value green">${{ '{:,}'.format(data.finances.money) }}</div>
+<aside class="sidebar">{% include '_sidebar.html' %}</aside>
+
+<div class="app-main">
+<div class="app-content">
+
+    <div class="content-header">
+        <div>
+            <h1 class="content-title">Dashboard</h1>
+            <div class="content-subtitle">{{ discord_username }}{% if vtc %} · [{{ vtc.tag }}] {{ vtc.name }}{% endif %}</div>
         </div>
-        <div class="card">
-            <div class="label">Total Debt</div>
-            <div class="value red">${{ '{:,}'.format(data.finances.total_debt) }}</div>
-        </div>
-        <div class="card">
-            <div class="label">Active Loans</div>
-            <div class="value">{{ data.finances.loans | length }}</div>
-        </div>
-        <div class="card">
-            <div class="label">Experience</div>
-            <div class="value">{{ '{:,}'.format(data.player.experience_points) }}</div>
-        </div>
-        <div class="card">
-            <div class="label">Distance Driven</div>
-            <div class="value">{{ '{:,}'.format(data.player.total_distance_km) }} km</div>
-        </div>
-        <div class="card">
-            <div class="label">Drivers</div>
-            <div class="value">{{ data.drivers | length }}</div>
+        <div class="content-actions">
+            {% if latest %}
+            <div class="live-pill"><span class="live-dot"></span>Live</div>
+            {% endif %}
         </div>
     </div>
 
-    <!-- Drivers Table -->
-    <h2>Drivers</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Hometown</th>
-                <th>Current City</th>
-                <th>XP</th>
-                <th>ADR</th>
-                <th>Long Dist</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for driver in data.drivers[:50] %}
-            <tr>
-                <td>{{ driver.id }}</td>
-                <td>{{ driver.hometown }}</td>
-                <td>{{ driver.current_city }}</td>
-                <td>{{ '{:,}'.format(driver.experience_points) }}</td>
-                <td>{{ driver.adr }}</td>
-                <td>{{ driver.long_dist }}</td>
-                <td>
-                    {% if driver.state == 2 %}
-                        <span class="badge working">On Job</span>
-                    {% else %}
-                        <span class="badge idle">Idle</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+{% if not latest %}
 
-    <!-- Recent Jobs -->
-    <h2>Recent Jobs</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Cargo</th>
-                <th>From</th>
-                <th>To</th>
-                <th>Revenue</th>
-                <th>Wage</th>
-                <th>Fuel</th>
-                <th>Distance</th>
-                <th>Day</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for job in data.jobs[:30] %}
-            <tr>
-                <td>{{ job.cargo }}</td>
-                <td>{{ job.source_city }}</td>
-                <td>{{ job.destination_city }}</td>
-                <td class="green">${{ '{:,}'.format(job.revenue) }}</td>
-                <td>${{ '{:,}'.format(job.wage) }}</td>
-                <td>${{ '{:,}'.format(job.fuel) }}</td>
-                <td>{{ job.distance_km }} km</td>
-                <td>{{ job.day }}</td>
-            </tr>
+<div class="no-data-state">
+    <h2>Waiting for Data</h2>
+    <p>Your dashboard populates automatically once the client connects. No uploads — just install and play.</p>
+
+    <div class="steps-row">
+        <div class="step-cell">
+            <div class="step-n">Step 01</div>
+            <div class="step-title">Download the Client</div>
+            <div class="step-desc">Get TheDispatch.exe from the GitHub releases page</div>
+        </div>
+        <div class="step-cell">
+            <div class="step-n">Step 02</div>
+            <div class="step-title">Sign In on First Run</div>
+            <div class="step-desc">The client opens a Discord login — use the same account</div>
+        </div>
+        <div class="step-cell">
+            <div class="step-n">Step 03</div>
+            <div class="step-title">Play ATS or ETS2</div>
+            <div class="step-desc">The client watches your save file and pushes data live</div>
+        </div>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        {% if not vtc %}
+        <a href="/vtc" class="btn btn-amber">Create / Join a VTC</a>
+        {% endif %}
+        <a href="/leaderboard" class="btn btn-ghost">View Leaderboard</a>
+    </div>
+</div>
+
+{% else %}
+
+{% set net = (latest.money or 0) - (latest.total_debt or 0) %}
+{% set on_job_count = 0 %}
+{% if latest.drivers %}{% set on_job_count = latest.drivers | selectattr('state', 'equalto', 2) | list | length %}{% endif %}
+
+<div class="stats-grid" style="animation: fadeUp 0.35s both">
+    <div class="stat-card c-green" style="animation-delay:0s">
+        <div class="stat-label">Cash on Hand</div>
+        <div class="stat-value green">${{ '{:,}'.format(latest.money or 0) }}</div>
+        <div class="stat-sub">Available balance</div>
+    </div>
+    <div class="stat-card c-red" style="animation-delay:0.05s">
+        <div class="stat-label">Total Debt</div>
+        <div class="stat-value red">${{ '{:,}'.format(latest.total_debt or 0) }}</div>
+        <div class="stat-sub">{{ (latest.loans or []) | length }} loan{% if (latest.loans or []) | length != 1 %}s{% endif %}</div>
+    </div>
+    <div class="stat-card c-amber" style="animation-delay:0.1s">
+        <div class="stat-label">Net Position</div>
+        <div class="stat-value {% if net >= 0 %}green{% else %}red{% endif %}">${{ '{:,}'.format(net) }}</div>
+        <div class="stat-sub">Cash minus debt</div>
+    </div>
+    <div class="stat-card" style="animation-delay:0.15s">
+        <div class="stat-label">Experience</div>
+        <div class="stat-value amber">{{ '{:,}'.format(latest.experience_points or 0) }}</div>
+        <div class="stat-sub">XP earned</div>
+    </div>
+    <div class="stat-card" style="animation-delay:0.2s">
+        <div class="stat-label">Distance</div>
+        <div class="stat-value">{{ '{:,}'.format(latest.total_distance_km or 0) }}</div>
+        <div class="stat-sub">Kilometres driven</div>
+    </div>
+    <div class="stat-card" style="animation-delay:0.25s">
+        <div class="stat-label">Jobs Logged</div>
+        <div class="stat-value amber">{{ '{:,}'.format(job_count) }}</div>
+        <div class="stat-sub">{{ latest.driver_count or 0 }} drivers · {{ on_job_count }} on job</div>
+    </div>
+</div>
+
+<div class="info-strip">
+    <div class="info-cell">
+        <div>
+            <div class="info-cell-label">Global Rank — Distance</div>
+            <div class="info-cell-sub">vs all drivers</div>
+        </div>
+        <div class="info-cell-value">{% if dist_rank %}#{{ dist_rank }}{% else %}—{% endif %}</div>
+    </div>
+    <div class="info-cell">
+        <div>
+            <div class="info-cell-label">Total Earnings</div>
+            <div class="info-cell-sub">from {{ job_count }} jobs</div>
+        </div>
+        <div class="info-cell-value" style="color:var(--green)">${{ '{:,}'.format(total_revenue) }}</div>
+    </div>
+    <div class="info-cell">
+        <div>
+            <div class="info-cell-label">VTC</div>
+            <div class="info-cell-sub">{% if vtc %}{{ vtc.name }}{% else %}Not in a VTC{% endif %}</div>
+        </div>
+        {% if vtc %}
+        <a href="/vtc/{{ vtc.id }}" class="btn btn-ghost btn-sm">[{{ vtc.tag }}] →</a>
+        {% else %}
+        <a href="/vtc" class="btn btn-ghost btn-sm">Join VTC</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="grid-2">
+
+    <div class="panel">
+        <div class="panel-hd">
+            <div class="panel-title">Driver Roster</div>
+            <div class="panel-badge">{{ (latest.drivers or []) | length }} UNITS</div>
+        </div>
+        <div class="filter-bar">
+            <button class="filter-btn active" onclick="filterDrivers('all',this)">All</button>
+            <button class="filter-btn" onclick="filterDrivers('job',this)">On Job</button>
+            <button class="filter-btn" onclick="filterDrivers('idle',this)">Idle</button>
+        </div>
+        <div class="tbl-wrap">
+            {% if latest.drivers %}
+            <table>
+                <thead>
+                    <tr>
+                        <th onclick="sortDrivers('unit')">Unit</th>
+                        <th onclick="sortDrivers('hometown')">Hometown</th>
+                        <th>Location</th>
+                        <th onclick="sortDrivers('xp')">XP</th>
+                        <th onclick="sortDrivers('adr')" title="Hazardous Materials">Haz</th>
+                        <th onclick="sortDrivers('long')">Long</th>
+                        <th onclick="sortDrivers('heavy')">Heavy</th>
+                        <th onclick="sortDrivers('status')">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="driver-body">
+                    {% for driver in latest.drivers %}
+                    <tr class="driver-row"
+                        data-state="{{ driver.state }}"
+                        data-xp="{{ driver.experience_points }}"
+                        data-adr="{{ driver.adr }}"
+                        data-long="{{ driver.long_dist }}"
+                        data-heavy="{{ driver.heavy }}"
+                        data-unit="{{ driver.id | replace('driver.', '') | int }}"
+                        data-hometown="{{ driver.hometown | replace('_', ' ') | lower if driver.hometown else '' }}">
+                        <td><span class="unit-lbl">{{ driver.id | replace('driver.', '') }}</span></td>
+                        <td style="color:var(--text-primary);text-transform:capitalize">{{ driver.hometown | replace('_', ' ') | title if driver.hometown and driver.hometown != '--' else '—' }}</td>
+                        <td style="color:var(--text-primary);text-transform:capitalize">{{ driver.current_city | replace('_', ' ') | title if driver.current_city and driver.current_city != '--' else '—' }}</td>
+                        <td class="num mono-val">{{ '{:,}'.format(driver.experience_points) }}</td>
+                        <td><div class="pips">{% for i in range(5) %}<div class="pip {% if i < driver.adr %}on{% endif %}"></div>{% endfor %}</div></td>
+                        <td><div class="pips">{% for i in range(5) %}<div class="pip {% if i < driver.long_dist %}on{% endif %}"></div>{% endfor %}</div></td>
+                        <td><div class="pips">{% for i in range(5) %}<div class="pip {% if i < driver.heavy %}on{% endif %}"></div>{% endfor %}</div></td>
+                        <td>
+                            {% if driver.state == 2 %}
+                                <span class="badge badge-green">On Job</span>
+                            {% else %}
+                                <span class="badge badge-muted">Idle</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="empty-state"><p>No driver data — run the game with the client active</p></div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-hd">
+            <div class="panel-title">Job History</div>
+            <div class="panel-badge">{{ jobs | length }} RECENT</div>
+        </div>
+        <div class="feed">
+            {% if jobs %}
+            {% for job in jobs %}
+            <div class="feed-item">
+                <div class="feed-route">
+                    <span class="feed-city">{{ job.source_city | replace('_', ' ') | upper }}</span>
+                    <span class="feed-arrow">→</span>
+                    <span class="feed-city">{{ job.destination_city | replace('_', ' ') | upper }}</span>
+                </div>
+                <div class="feed-meta">
+                    <span class="feed-rev">+${{ '{:,}'.format(job.revenue) }}</span>
+                    {% if job.distance_km %}<span class="feed-dist">{{ job.distance_km }} km</span>{% endif %}
+                    {% if job.cargo %}<span class="feed-cargo">{{ job.cargo | replace('_', ' ') }}</span>{% endif %}
+                </div>
+                <div class="feed-ts">Day {{ job.game_day }} · {{ job.logged_at.strftime('%m/%d %H:%M') }}</div>
+            </div>
             {% endfor %}
-        </tbody>
-    </table>
+            {% else %}
+            <div class="empty-state"><p>No jobs logged yet — complete a delivery with the client running</p></div>
+            {% endif %}
+        </div>
+    </div>
+
+</div>
+
+{% if latest.loans %}
+<div class="sec-label">Active Loans</div>
+<div class="loans-grid">
+    {% for loan in latest.loans %}
+    {% set pct = ((loan.original_amount - loan.amount) / loan.original_amount * 100) | int %}
+    <div class="loan-card">
+        <div class="loan-amt">${{ '{:,}'.format(loan.amount) }}</div>
+        <div class="loan-orig">Original: ${{ '{:,}'.format(loan.original_amount) }}</div>
+        <div class="loan-track"><div class="loan-fill" style="width:{{ pct }}%"></div></div>
+        <div class="loan-pct">{{ pct }}% paid off</div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% endif %}
+
+</div><!-- /app-content -->
+
+<div class="statusbar">
+    <span>
+        {% if latest %}
+        <span style="color:var(--green)">●</span>&nbsp;Connected · Last push {{ player.last_seen.strftime('%m/%d %H:%M') }}
+        {% else %}
+        <span style="color:var(--text-muted)">●</span>&nbsp;Waiting for client
+        {% endif %}
+    </span>
+    <span>{{ discord_username }}{% if vtc %} · [{{ vtc.tag }}] {{ vtc.name }}{% endif %}</span>
+    <span>THE DISPATCH <span class="sb-val">v0.3.0</span></span>
+</div>
+</div><!-- /app-main -->
+
+</div><!-- /app-layout -->
+
+<script>
+let currentFilter = 'all';
+
+function filterDrivers(f, btn) {
+    currentFilter = f;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyFilter();
+}
+
+function applyFilter() {
+    document.querySelectorAll('.driver-row').forEach(row => {
+        const s = parseInt(row.dataset.state);
+        if (currentFilter === 'all') row.style.display = '';
+        else if (currentFilter === 'job') row.style.display = s === 2 ? '' : 'none';
+        else row.style.display = s !== 2 ? '' : 'none';
+    });
+}
+
+function sortDrivers(field) {
+    document.querySelectorAll('thead th').forEach(h => h.classList.remove('sorted'));
+    event.currentTarget.classList.add('sorted');
+    const tbody = document.getElementById('driver-body');
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll('.driver-row'));
+    rows.sort((a, b) => {
+        if (field === 'xp')       return parseInt(b.dataset.xp) - parseInt(a.dataset.xp);
+        if (field === 'adr')      return parseInt(b.dataset.adr) - parseInt(a.dataset.adr);
+        if (field === 'long')     return parseInt(b.dataset.long) - parseInt(a.dataset.long);
+        if (field === 'heavy')    return parseInt(b.dataset.heavy) - parseInt(a.dataset.heavy);
+        if (field === 'hometown') return a.dataset.hometown.localeCompare(b.dataset.hometown);
+        if (field === 'status')   return parseInt(b.dataset.state) - parseInt(a.dataset.state);
+        if (field === 'unit')     return parseInt(a.dataset.unit) - parseInt(b.dataset.unit);
+        return 0;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+    applyFilter();
+}
+</script>
 </body>
 </html>

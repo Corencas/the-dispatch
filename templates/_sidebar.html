@@ -1,0 +1,68 @@
+{% set ep = request.endpoint %}
+
+<div class="sidebar-logo">
+    <a href="/"><img src="/static/logo.png" alt="The Dispatch"></a>
+</div>
+
+<nav class="sidebar-nav">
+    <div class="nav-section">
+        <div class="nav-section-label">Main</div>
+
+        <a class="nav-item {% if ep == 'dashboard' %}active{% endif %}" href="/dashboard">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+            Dashboard
+        </a>
+
+        <a class="nav-item {% if ep in ('leaderboard_global', 'leaderboard_vtc') %}active{% endif %}" href="/leaderboard">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+            Leaderboard
+        </a>
+    </div>
+
+    <div class="nav-section">
+        <div class="nav-section-label">Company</div>
+
+        <a class="nav-item {% if ep == 'vtc_home' %}active{% endif %}" href="/vtc">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></svg>
+            My VTC
+        </a>
+
+        {% if _sb_vtc %}
+        <a class="nav-item {% if ep == 'vtc_dashboard' %}active{% endif %}" href="/vtc/{{ _sb_vtc.id }}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg>
+            Fleet Dashboard
+        </a>
+        {% endif %}
+    </div>
+</nav>
+
+<div class="sidebar-user">
+    {% if discord_username %}
+        {% set xp = _sb_xp or 0 %}
+        {% set level = (xp // 10000) + 1 %}
+        {% set xp_progress = (xp % 10000 / 10000 * 100) | int %}
+
+        <div class="user-row">
+            <div class="user-avatar">{{ discord_username[:2] | upper }}</div>
+            <div class="user-info">
+                <div class="user-name">{{ discord_username }}</div>
+                <div class="user-level">LVL {{ level }}</div>
+            </div>
+        </div>
+
+        <div class="xp-label-row">
+            <span>XP</span>
+            <span>{{ '{:,}'.format(xp % 10000) }} / 10,000</span>
+        </div>
+        <div class="xp-track">
+            <div class="xp-fill" style="width:{{ xp_progress }}%"></div>
+        </div>
+
+        <a class="sidebar-logout" href="/auth/logout">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+            Sign Out
+        </a>
+    {% else %}
+        <a href="/auth/login?next=/dashboard" class="btn btn-amber" style="width:100%;justify-content:center">Sign In with Discord</a>
+    {% endif %}
+</div>

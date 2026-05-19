@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"C:\\\\Users\\\\zeyad\\\\Documents\\\\the-dispatch\\\\.venv\\\\Scripts\\\\python.exe\" -c \"import flask, flask_sqlalchemy, flask_cors, dotenv; print\\('deps ok'\\)\")",
+      "Bash(\"C:\\\\Users\\\\zeyad\\\\Documents\\\\the-dispatch\\\\.venv\\\\Scripts\\\\python.exe\" server.py)",
+      "Bash(curl -s http://localhost:5001/api/players)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:5001/api/players\" -Method Get | ConvertTo-Json)",
+      "PowerShell(Get-Process *)",
+      "Bash(FLASK_DEBUG=0 \"C:\\\\Users\\\\zeyad\\\\Documents\\\\the-dispatch\\\\.venv\\\\Scripts\\\\python.exe\" server.py)",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:5001/api/players\" -Method Get | ConvertTo-Json -Depth 3)",
+      "PowerShell($base = \"http://localhost:5001\"; $routes = @\\(\"/api/players\", \"/leaderboard\", \"/vtc\", \"/\"\\); foreach \\($r in $routes\\) { try { $resp = Invoke-WebRequest -Uri \"$base$r\" -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop; Write-Output \"$r  ->  $\\($resp.StatusCode\\)\" } catch { $code = $_.Exception.Response.StatusCode.value__; Write-Output \"$r  ->  $code\" } })",
+      "PowerShell(Invoke-WebRequest -Uri \"http://localhost:5001/vtc\" -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue | Select-Object StatusCode, Headers)",
+      "PowerShell(try { Invoke-WebRequest -Uri \"http://localhost:5001/vtc\" -MaximumRedirection 0 -UseBasicParsing } catch [System.Net.WebException] { $_.Exception.Response.StatusCode.value__ })",
+      "PowerShell($base = \"http://localhost:5001\"; $routes = @\\(\"/\", \"/api/players\", \"/leaderboard\", \"/leaderboard?sort=jobs\", \"/leaderboard?sort=earnings\", \"/vtc\", \"/auth/login\"\\); foreach \\($r in $routes\\) { try { $resp = Invoke-WebRequest -Uri \"$base$r\" -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop; \"$r  ->  $\\($resp.StatusCode\\)\" } catch { \"$r  ->  $\\($_.Exception.Response.StatusCode.value__\\)\" } })",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:vtc-systems.com)",
+      "Bash(python -c \"from server import app; print\\('OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\zeyad\\\\Documents\\\\the-dispatch\\\\templates\" -Filter \"*.html\")",
+      "Bash(Select-Object Name)",
+      "Bash(python server.py)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5001/)",
+      "Bash(curl -s http://localhost:5001/static/dispatch.css)",
+      "Bash(curl -s http://localhost:5001/)"
+    ]
+  }
+}

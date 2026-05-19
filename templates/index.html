@@ -3,66 +3,712 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>The Dispatch</title>
+    <title>The Dispatch — Free VTC Fleet Management for ATS &amp; ETS2</title>
+    <meta name="description" content="The Dispatch is a completely free, unlimited fleet management platform for American Truck Simulator and Euro Truck Simulator 2. Auto job logging, AI voice dispatch, live fleet dashboard.">
+    <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg:#080a0c; --bg2:#0d0f12; --bg3:#111418;
+            --border:#1c2028; --border2:#242830;
+            --amber:#f5a623; --amberDim:rgba(245,166,35,0.08); --amberGlow:rgba(245,166,35,0.15);
+            --red:#e53535; --green:#22c55e;
+            --txt:#f1f3f7; --txt2:#8b92a5; --txt3:#3d4455; --txt4:#252c3a;
+        }
+        html { scroll-behavior: smooth; }
         body {
-            background: #0f1117;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
+            background: var(--bg);
+            color: var(--txt);
+            font-family: 'Inter', sans-serif;
+            font-size: 15px;
+            line-height: 1.6;
+            min-height: 100vh;
+            overflow-x: hidden;
         }
-        .upload-box {
-            text-align: center;
-            padding: 60px 80px;
-            border: 2px dashed #2a2d3a;
-            border-radius: 12px;
-            background: #161822;
+        body::after {
+            content: '';
+            position: fixed; inset: 0;
+            background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.03) 3px, rgba(0,0,0,0.03) 4px);
+            pointer-events: none;
+            z-index: 9999;
         }
+        a { text-decoration: none; color: inherit; }
+
+        /* ─── NAV ─── */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0;
+            z-index: 100; height: 60px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(8,10,12,0.92);
+            backdrop-filter: blur(10px);
+            display: flex; align-items: center; padding: 0 40px; gap: 0;
+        }
+        .nav-logo img { height: 34px; display: block; }
+        .nav-links {
+            display: flex; align-items: center; gap: 0; margin-left: 36px;
+        }
+        .nav-links a {
+            font-size: 14px; font-weight: 500;
+            color: var(--txt3);
+            padding: 0 18px; height: 60px;
+            display: flex; align-items: center;
+            border-right: 1px solid var(--border);
+            transition: color 0.15s;
+        }
+        .nav-links a:first-child { border-left: 1px solid var(--border); }
+        .nav-links a:hover { color: var(--txt); }
+        .nav-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+        .nav-cta {
+            font-size: 14px; font-weight: 600;
+            padding: 8px 20px;
+            background: var(--amber); color: #000;
+            border-radius: 6px;
+            transition: background 0.1s;
+        }
+        .nav-cta:hover { background: #e8961a; }
+        .nav-ghost {
+            font-size: 14px; font-weight: 500;
+            padding: 7px 18px;
+            border: 1px solid var(--border2); color: var(--txt2);
+            border-radius: 6px;
+            transition: all 0.1s;
+        }
+        .nav-ghost:hover { border-color: var(--amber); color: var(--amber); }
+
+        /* ─── HERO ─── */
+        .hero {
+            min-height: 100vh;
+            display: flex; align-items: center;
+            padding: 100px 40px 60px;
+            position: relative; overflow: hidden;
+        }
+        .hero::before {
+            content: '';
+            position: absolute; inset: 0;
+            background: radial-gradient(ellipse 80% 60% at 60% 50%, rgba(245,166,35,0.04) 0%, transparent 70%);
+        }
+        .hero-rule { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); opacity: 0.5; }
+        .hero-rule:nth-child(1) { left: 25%; }
+        .hero-rule:nth-child(2) { left: 50%; }
+        .hero-rule:nth-child(3) { left: 75%; }
+
+        .hero-inner {
+            max-width: 1400px; margin: 0 auto; width: 100%;
+            display: grid; grid-template-columns: 1fr 480px;
+            gap: 60px; align-items: center;
+            position: relative; z-index: 1;
+        }
+
+        .hero-logo-large {
+            margin-bottom: 28px;
+        }
+        .hero-logo-large img {
+            width: 320px;
+            height: auto;
+            display: block;
+        }
+
+        .hero-eyebrow {
+            font-size: 13px; font-weight: 600;
+            color: var(--amber);
+            margin-bottom: 16px;
+            display: flex; align-items: center; gap: 10px;
+            letter-spacing: 0.02em;
+        }
+        .hero-eyebrow::before { content: '//'; color: var(--txt3); }
+
         h1 {
-            font-size: 2.4rem;
-            font-weight: 700;
-            margin-bottom: 8px;
-            color: #ffffff;
+            font-family: 'Black Han Sans', sans-serif;
+            font-size: clamp(3.2rem, 6vw, 5.4rem);
+            line-height: 1;
+            text-transform: uppercase;
+            margin-bottom: 10px;
         }
-        h1 span { color: #f5a623; }
-        p {
-            color: #6b7280;
-            margin-bottom: 32px;
-            font-size: 0.95rem;
+        h1 span { color: var(--amber); }
+        .hero-sub {
+            font-family: 'Black Han Sans', sans-serif;
+            font-size: clamp(1.3rem, 2.2vw, 1.8rem);
+            color: var(--txt3);
+            margin-bottom: 24px;
+            line-height: 1.15;
         }
-        .upload-btn {
-            display: inline-block;
-            background: #f5a623;
-            color: #0f1117;
-            padding: 12px 32px;
+        .hero-desc {
+            font-size: 16px; font-weight: 400;
+            color: var(--txt2);
+            line-height: 1.7;
+            max-width: 520px; margin-bottom: 36px;
+        }
+
+        .hero-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 40px; }
+        .btn-primary {
+            font-size: 15px; font-weight: 700;
+            padding: 12px 28px;
+            background: var(--amber); color: #000;
+            border-radius: 6px;
+            display: inline-flex; align-items: center; gap: 8px;
+            transition: background 0.1s;
+        }
+        .btn-primary:hover { background: #e8961a; }
+        .btn-secondary {
+            font-size: 15px; font-weight: 600;
+            padding: 11px 28px;
+            border: 1px solid var(--border2); color: var(--txt2);
+            border-radius: 6px;
+            display: inline-flex; align-items: center; gap: 8px;
+            transition: all 0.1s;
+        }
+        .btn-secondary:hover { border-color: var(--amber); color: var(--amber); }
+
+        .hero-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+        .badge {
+            font-size: 12px; font-weight: 600;
+            padding: 4px 10px;
+            border: 1px solid var(--border2); color: var(--txt3);
+            border-radius: 4px;
+        }
+        .badge.grn { color: var(--green); border-color: rgba(34,197,94,0.25); }
+
+        /* dispatch board */
+        .dispatch-board {
+            background: var(--bg2);
+            border: 1px solid var(--border);
             border-radius: 8px;
-            font-weight: 600;
-            font-size: 1rem;
-            cursor: pointer;
-            border: none;
+            overflow: hidden;
         }
-        .upload-btn:hover { background: #e09516; }
-        input[type="file"] { display: none; }
-        .note {
-            margin-top: 20px;
-            font-size: 0.8rem;
-            color: #4b5563;
+        .db-header {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg3);
+            display: flex; align-items: center; justify-content: space-between;
         }
+        .db-title { font-size: 12px; font-weight: 600; color: var(--txt2); }
+        .db-live { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--green); }
+        .db-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); animation: blink 1.8s infinite; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+        .db-rows { padding: 0; }
+        .db-row {
+            display: grid; grid-template-columns: 64px 1fr 72px 72px;
+            gap: 0; padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            transition: background 0.2s;
+            animation: slideIn 0.4s both;
+        }
+        .db-row:hover { background: var(--bg3); }
+        .db-unit { font-size: 13px; font-weight: 700; color: var(--amber); }
+        .db-route { font-size: 14px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .db-route small { font-size: 12px; color: var(--txt3); display: block; font-weight: 400; margin-top: 1px; }
+        .db-dist { font-size: 13px; font-weight: 500; color: var(--txt2); text-align: right; }
+        .db-status {
+            font-size: 11px; font-weight: 700;
+            padding: 2px 8px;
+            border: 1px solid;
+            text-align: center; border-radius: 4px;
+            text-transform: uppercase; letter-spacing: 0.04em;
+            align-self: center;
+        }
+        .db-status.on { color: var(--green); border-color: rgba(34,197,94,0.3); }
+        .db-status.idle { color: var(--txt3); border-color: var(--border2); }
+        .db-footer {
+            padding: 9px 14px;
+            border-top: 1px solid var(--border);
+            background: var(--bg3);
+            display: flex; justify-content: space-between;
+        }
+        .db-footer span { font-size: 12px; font-weight: 500; color: var(--txt3); }
+        .db-footer .val { color: var(--txt2); }
+        @keyframes slideIn { from{opacity:0;transform:translateX(8px)} to{opacity:1;transform:translateX(0)} }
+
+        /* ─── TICKER ─── */
+        .ticker {
+            height: 38px;
+            border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+            background: var(--bg2);
+            overflow: hidden; display: flex; align-items: center; position: relative;
+        }
+        .ticker::before, .ticker::after {
+            content: '';
+            position: absolute; top: 0; bottom: 0; width: 60px; z-index: 2; pointer-events: none;
+        }
+        .ticker::before { left: 0; background: linear-gradient(to right, var(--bg2), transparent); }
+        .ticker::after  { right: 0; background: linear-gradient(to left, var(--bg2), transparent); }
+        .ticker-track {
+            display: flex; align-items: center; gap: 0;
+            white-space: nowrap;
+            animation: ticker 30s linear infinite;
+        }
+        @keyframes ticker { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
+        .ticker-item {
+            font-size: 12px; font-weight: 500;
+            color: var(--txt3); padding: 0 28px;
+            display: flex; align-items: center; gap: 8px;
+            border-right: 1px solid var(--border);
+        }
+        .ticker-item .hi { color: var(--amber); font-weight: 600; }
+        .ticker-item .grn { color: var(--green); font-weight: 600; }
+
+        /* ─── SECTIONS ─── */
+        section { padding: 80px 40px; }
+        .section-inner { max-width: 1400px; margin: 0 auto; }
+        .section-label {
+            font-size: 12px; font-weight: 600;
+            color: var(--txt3);
+            margin-bottom: 12px;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .section-label::before { content: '//'; }
+        .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+        .section-title {
+            font-family: 'Black Han Sans', sans-serif;
+            font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+            text-transform: uppercase;
+            line-height: 1.05; margin-bottom: 12px;
+        }
+        .section-title span { color: var(--amber); }
+        .section-desc {
+            font-size: 16px; font-weight: 400;
+            color: var(--txt2); max-width: 540px;
+            line-height: 1.7; margin-bottom: 48px;
+        }
+
+        /* ─── FEATURES ─── */
+        .features-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); border-radius: 8px; overflow: hidden; }
+        .feat {
+            background: var(--bg2); padding: 28px 26px;
+            position: relative;
+            border-top: 2px solid transparent;
+            transition: background 0.15s, border-color 0.15s;
+        }
+        .feat:hover { background: var(--bg3); border-top-color: var(--amber); }
+        .feat-num { font-size: 11px; font-weight: 600; color: var(--txt4); margin-bottom: 16px; position: absolute; top: 16px; right: 16px; }
+        .feat-icon { font-size: 1.2rem; color: var(--amber); margin-bottom: 14px; line-height: 1; }
+        .feat-name { font-size: 17px; font-weight: 700; margin-bottom: 10px; color: #fff; }
+        .feat-desc { font-size: 14px; font-weight: 400; color: var(--txt2); line-height: 1.65; }
+        .feat-tag {
+            display: inline-block; margin-top: 14px;
+            font-size: 11px; font-weight: 700;
+            color: var(--green); border: 1px solid rgba(34,197,94,0.25);
+            padding: 2px 8px; border-radius: 4px;
+            text-transform: uppercase; letter-spacing: 0.04em;
+        }
+
+        /* ─── HOW IT WORKS ─── */
+        #how { background: var(--bg2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+        .steps { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; background: var(--border); border-radius: 8px; overflow: hidden; }
+        .step { background: var(--bg2); padding: 36px 32px; }
+        .step-n {
+            font-size: 11px; font-weight: 700;
+            color: var(--amber);
+            margin-bottom: 20px;
+            display: flex; align-items: center; gap: 10px;
+            text-transform: uppercase; letter-spacing: 0.04em;
+        }
+        .step-n::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+        .step-n span {
+            background: var(--amber); color: #000;
+            width: 22px; height: 22px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px; font-weight: 800; flex-shrink: 0;
+            border-radius: 4px;
+        }
+        .step-title { font-size: 22px; font-weight: 800; margin-bottom: 12px; letter-spacing: -0.01em; }
+        .step-desc { font-size: 15px; font-weight: 400; color: var(--txt2); line-height: 1.65; }
+        .step-detail {
+            margin-top: 16px; padding: 12px 14px;
+            background: var(--bg3); border-left: 2px solid var(--border2);
+            border-radius: 0 4px 4px 0;
+        }
+        .step-detail code {
+            font-family: 'Inter', sans-serif;
+            font-size: 13px; font-weight: 500;
+            color: var(--txt3);
+            display: block; line-height: 1.9;
+        }
+        .step-detail code .hi { color: var(--amber); }
+
+        /* ─── FREE BANNER ─── */
+        .free-banner { background: var(--bg); border-top: 1px solid var(--border); padding: 64px 40px; text-align: center; }
+        .free-banner .section-inner { display: flex; flex-direction: column; align-items: center; }
+        .free-grid { display: flex; gap: 1px; background: var(--border); margin: 0 auto 48px; max-width: 800px; width: 100%; border-radius: 8px; overflow: hidden; }
+        .free-item { flex: 1; background: var(--bg2); padding: 20px 16px; text-align: center; }
+        .free-item .num { font-size: 2.4rem; font-weight: 800; color: var(--amber); letter-spacing: -0.02em; }
+        .free-item .lbl { font-size: 12px; font-weight: 600; color: var(--txt3); margin-top: 4px; }
+        .free-headline { font-family: 'Black Han Sans', sans-serif; font-size: clamp(2rem,4vw,3.2rem); text-transform: uppercase; margin-bottom: 12px; }
+        .free-sub { font-size: 16px; font-weight: 400; color: var(--txt2); margin-bottom: 32px; max-width: 480px; line-height: 1.7; }
+
+        .compat { display: flex; justify-content: center; gap: 0; background: var(--border); max-width: 480px; margin: 0 auto; width: 100%; border-radius: 6px; overflow: hidden; }
+        .compat-item { flex: 1; background: var(--bg3); padding: 14px 20px; text-align: center; }
+        .compat-item .game { font-size: 15px; font-weight: 600; color: #fff; display: block; margin-bottom: 3px; }
+        .compat-item .sub { font-size: 12px; font-weight: 500; color: var(--txt3); }
+
+        /* ─── FOOTER ─── */
+        footer { border-top: 2px solid var(--amber); background: var(--bg2); padding: 40px 40px 28px; }
+        .footer-inner { max-width: 1400px; margin: 0 auto; }
+        .footer-top { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 40px; margin-bottom: 32px; }
+        .footer-brand img { height: 30px; margin-bottom: 12px; display: block; }
+        .footer-brand p { font-size: 14px; font-weight: 400; color: var(--txt3); line-height: 1.6; max-width: 220px; }
+        .footer-col h4 { font-size: 12px; font-weight: 700; color: var(--txt3); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .footer-col a { display: block; font-size: 14px; font-weight: 400; color: var(--txt3); margin-bottom: 8px; transition: color 0.1s; }
+        .footer-col a:hover { color: var(--amber); }
+        .footer-bottom { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding-top: 20px; }
+        .footer-copy { font-size: 13px; font-weight: 400; color: var(--txt3); }
+        .footer-status { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; color: var(--green); }
+        .footer-sdot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); animation: blink 2s infinite; }
+
+        /* ─── RESPONSIVE ─── */
+        @media (max-width: 1024px) {
+            .hero-inner { grid-template-columns: 1fr; gap: 40px; }
+            .dispatch-board { max-width: 480px; }
+            .features-grid { grid-template-columns: repeat(2,1fr); }
+            .steps { grid-template-columns: 1fr; }
+            .footer-top { grid-template-columns: 1fr 1fr; gap: 28px; }
+        }
+        @media (max-width: 640px) {
+            section { padding: 60px 20px; }
+            .hero { padding: 80px 20px 48px; }
+            nav { padding: 0 20px; }
+            .nav-links { display: none; }
+            .features-grid { grid-template-columns: 1fr; }
+            .free-grid { flex-direction: column; }
+            footer { padding: 32px 20px 20px; }
+            .footer-top { grid-template-columns: 1fr; }
+            .hero-logo-large img { width: 220px; }
+        }
+
+        @keyframes fadeUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+        .fade-up { animation: fadeUp 0.5s both; }
+        .fade-up:nth-child(2){animation-delay:0.06s}
+        .fade-up:nth-child(3){animation-delay:0.12s}
+        .fade-up:nth-child(4){animation-delay:0.18s}
+        .fade-up:nth-child(5){animation-delay:0.24s}
+        .fade-up:nth-child(6){animation-delay:0.30s}
     </style>
 </head>
 <body>
-    <div class="upload-box">
-        <h1>The <span>Dispatch</span></h1>
-        <p>Upload your decrypted ATS save file to view your company dashboard.</p>
-        <form method="POST" enctype="multipart/form-data">
-            <label class="upload-btn" for="savefile">Upload game-decoded.sii</label>
-            <input type="file" id="savefile" name="savefile" accept=".sii" onchange="this.form.submit()">
-        </form>
-        <p class="note">Your file is processed locally and never stored permanently.</p>
+
+<!-- ─── NAV ─── -->
+<nav>
+    <a class="nav-logo" href="/"><img src="/static/logo.png" alt="The Dispatch"></a>
+    <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how">How It Works</a>
+        <a href="#free">Pricing</a>
+        <a href="/leaderboard">Leaderboard</a>
     </div>
+    <div class="nav-right">
+        <a class="nav-ghost" href="/auth/login">Sign In</a>
+        <a class="nav-cta" href="/auth/login?next=/dashboard">▶ Open Dashboard</a>
+    </div>
+</nav>
+
+<!-- ─── HERO ─── -->
+<section class="hero">
+    <div class="hero-rule"></div>
+    <div class="hero-rule"></div>
+    <div class="hero-rule"></div>
+
+    <div class="hero-inner">
+        <div class="hero-left">
+            <div class="hero-logo-large">
+                <img src="/static/logo.png" alt="The Dispatch">
+            </div>
+            <div class="hero-eyebrow">Fleet Management Platform — ATS &amp; ETS2</div>
+            <h1>COMMAND<br><span>YOUR FLEET.</span></h1>
+            <div class="hero-sub">No limits. No paywalls. Just your trucks.</div>
+            <p class="hero-desc">
+                The Dispatch is a free, unlimited VTC fleet management platform built for American Truck Simulator and Euro Truck Simulator 2. Auto-log every job, monitor drivers live, run AI voice dispatch — all from a single dashboard.
+            </p>
+            <div class="hero-actions">
+                <a class="btn-primary" href="/auth/login?next=/dashboard">▶ Open Dashboard</a>
+                <a class="btn-secondary" href="#features">View Features</a>
+            </div>
+            <div class="hero-badges">
+                <span class="badge grn">100% Free</span>
+                <span class="badge">ATS Support</span>
+                <span class="badge">ETS2 Support</span>
+                <span class="badge">Discord OAuth</span>
+                <span class="badge">Unlimited Drivers</span>
+            </div>
+        </div>
+
+        <div class="dispatch-board">
+            <div class="db-header">
+                <span class="db-title">Dispatch Board — Live Feed</span>
+                <span class="db-live"><span class="db-dot"></span>Live</span>
+            </div>
+            <div class="db-rows" id="db-rows">
+                <div class="db-row fade-up">
+                    <div class="db-unit">UNIT-01</div>
+                    <div class="db-route">Los Angeles → Phoenix<small>Steel Coils · Flatbed</small></div>
+                    <div class="db-dist">482 km</div>
+                    <div class="db-status on">On Job</div>
+                </div>
+                <div class="db-row fade-up">
+                    <div class="db-unit">UNIT-02</div>
+                    <div class="db-route">Seattle → Portland<small>Lumber · Curtainsider</small></div>
+                    <div class="db-dist">277 km</div>
+                    <div class="db-status on">On Job</div>
+                </div>
+                <div class="db-row fade-up">
+                    <div class="db-unit">UNIT-03</div>
+                    <div class="db-route">Denver Base<small>Awaiting dispatch</small></div>
+                    <div class="db-dist">—</div>
+                    <div class="db-status idle">Idle</div>
+                </div>
+                <div class="db-row fade-up">
+                    <div class="db-unit">UNIT-04</div>
+                    <div class="db-route">Dallas → Houston<small>Chemicals · Tanker</small></div>
+                    <div class="db-dist">386 km</div>
+                    <div class="db-status on">On Job</div>
+                </div>
+                <div class="db-row fade-up">
+                    <div class="db-unit">UNIT-05</div>
+                    <div class="db-route">Chicago → Detroit<small>Auto Parts · Box</small></div>
+                    <div class="db-dist">448 km</div>
+                    <div class="db-status on">On Job</div>
+                </div>
+                <div class="db-row fade-up">
+                    <div class="db-unit">UNIT-06</div>
+                    <div class="db-route">Albuquerque Base<small>Awaiting dispatch</small></div>
+                    <div class="db-dist">—</div>
+                    <div class="db-status idle">Idle</div>
+                </div>
+            </div>
+            <div class="db-footer">
+                <span>Drivers <span class="val">6 total / 4 on job</span></span>
+                <span>Fleet earnings <span class="val" style="color:var(--green)">+$47,820</span></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ─── TICKER ─── -->
+<div class="ticker">
+    <div class="ticker-track" id="ticker">
+        <span class="ticker-item">Unit 01 <span class="hi">Los Angeles → Phoenix</span> · 482 km · +$3,240</span>
+        <span class="ticker-item">Fleet total distance <span class="hi">1,284,920 km</span></span>
+        <span class="ticker-item">Unit 07 <span class="grn">Job complete</span> Dallas → Houston · +$4,110</span>
+        <span class="ticker-item">New driver <span class="hi">Unit 12</span> joined the fleet</span>
+        <span class="ticker-item">Leaderboard <span class="hi">Unit 03</span> leads this week · 14,820 km</span>
+        <span class="ticker-item">Voice dispatch <span class="grn">active</span> — AI dispatcher online</span>
+        <span class="ticker-item">Unit 04 <span class="hi">Seattle → Portland</span> · 277 km · +$2,880</span>
+        <span class="ticker-item">The Dispatch <span class="hi">v1.0</span> — Free. Unlimited. Always.</span>
+        <span class="ticker-item">Unit 01 <span class="hi">Los Angeles → Phoenix</span> · 482 km · +$3,240</span>
+        <span class="ticker-item">Fleet total distance <span class="hi">1,284,920 km</span></span>
+        <span class="ticker-item">Unit 07 <span class="grn">Job complete</span> Dallas → Houston · +$4,110</span>
+        <span class="ticker-item">New driver <span class="hi">Unit 12</span> joined the fleet</span>
+        <span class="ticker-item">Leaderboard <span class="hi">Unit 03</span> leads this week · 14,820 km</span>
+        <span class="ticker-item">Voice dispatch <span class="grn">active</span> — AI dispatcher online</span>
+        <span class="ticker-item">Unit 04 <span class="hi">Seattle → Portland</span> · 277 km · +$2,880</span>
+        <span class="ticker-item">The Dispatch <span class="hi">v1.0</span> — Free. Unlimited. Always.</span>
+    </div>
+</div>
+
+<!-- ─── FEATURES ─── -->
+<section id="features">
+    <div class="section-inner">
+        <div class="section-label">Platform Features</div>
+        <div class="section-title">EVERYTHING YOUR VTC<br><span>ACTUALLY NEEDS.</span></div>
+        <div class="section-desc">Built by truckers for truckers. Every feature you'd expect from a paid platform — completely free, forever.</div>
+
+        <div class="features-grid">
+            <div class="feat fade-up">
+                <div class="feat-num">01</div>
+                <div class="feat-icon">⟳</div>
+                <div class="feat-name">Auto Job Logging</div>
+                <div class="feat-desc">The client watches your save file in real time. The moment a job completes, it's logged automatically — origin, destination, cargo, distance, and earnings. Zero manual input required.</div>
+                <span class="feat-tag">Automatic</span>
+            </div>
+            <div class="feat fade-up">
+                <div class="feat-num">02</div>
+                <div class="feat-icon">◉</div>
+                <div class="feat-name">AI Voice Dispatch</div>
+                <div class="feat-desc">An AI dispatcher reads job updates, alerts, and fleet notifications aloud using Edge-TTS. Hear your assignments called out like a real logistics operation — hands-free, immersive.</div>
+                <span class="feat-tag">Edge-TTS</span>
+            </div>
+            <div class="feat fade-up">
+                <div class="feat-num">03</div>
+                <div class="feat-icon">▦</div>
+                <div class="feat-name">Live Fleet Dashboard</div>
+                <div class="feat-desc">Monitor every driver in your VTC from one command center. See real-time location, cargo, XP, certifications, active loans, and full job history — all on a single dark-themed display.</div>
+                <span class="feat-tag">Real-Time</span>
+            </div>
+            <div class="feat fade-up">
+                <div class="feat-num">04</div>
+                <div class="feat-icon">⌬</div>
+                <div class="feat-name">Discord Integration</div>
+                <div class="feat-desc">Sign in with Discord — no passwords, no email accounts. Your Discord identity links your fleet data. Bot slash commands let your crew check fleet status, leaderboards, and personal stats from any channel.</div>
+                <span class="feat-tag">OAuth + Bot</span>
+            </div>
+            <div class="feat fade-up">
+                <div class="feat-num">05</div>
+                <div class="feat-icon">≡</div>
+                <div class="feat-name">Driver Leaderboards</div>
+                <div class="feat-desc">Ranked driver tables by total distance, jobs completed, and earnings — scoped to your VTC or global across all fleets. Updated automatically every session.</div>
+                <span class="feat-tag">VTC + Global</span>
+            </div>
+            <div class="feat fade-up" style="border-top:2px solid var(--amber)">
+                <div class="feat-num">06</div>
+                <div class="feat-icon" style="color:var(--green)">∞</div>
+                <div class="feat-name" style="color:var(--amber)">Unlimited. Free.</div>
+                <div class="feat-desc">No driver limits. No VTC size caps. No feature paywalls. No premium tier. The Dispatch is and will always be completely free — because fleet management software shouldn't cost more than the game.</div>
+                <span class="feat-tag" style="color:var(--amber);border-color:rgba(245,166,35,0.3)">Always Free</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ─── HOW IT WORKS ─── -->
+<section id="how">
+    <div class="section-inner">
+        <div class="section-label">Setup Guide</div>
+        <div class="section-title">UP AND RUNNING IN<br><span>THREE STEPS.</span></div>
+        <div class="section-desc">No complex configuration. Sign in once, install the client, then just play normally — data flows automatically.</div>
+
+        <div class="steps">
+            <div class="step">
+                <div class="step-n"><span>01</span>Connect with Discord</div>
+                <div class="step-title">Sign In Once.</div>
+                <div class="step-desc">
+                    Click Open Dashboard above. Authorize The Dispatch with your Discord account — your Discord ID becomes your fleet identity. No extra accounts, no passwords.
+                </div>
+                <div class="step-detail">
+                    <code><span class="hi">→</span> Click "Open Dashboard"</code>
+                    <code><span class="hi">→</span> Authorize with Discord</code>
+                    <code><span class="hi">→</span> Create or join a VTC</code>
+                    <code><span class="hi">→</span> Your fleet is ready</code>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-n"><span>02</span>Install the Client</div>
+                <div class="step-title">Download. Run. Done.</div>
+                <div class="step-desc">
+                    Download the Windows installer. On first run it opens a Discord login, finds your save files automatically, and installs the SCS telemetry plugin — no manual configuration needed.
+                </div>
+                <div class="step-detail">
+                    <code><span class="hi">→</span> Download TheDispatch.exe</code>
+                    <code><span class="hi">→</span> Run — sign in with Discord</code>
+                    <code><span class="hi">→</span> Client sits in system tray</code>
+                    <code><span class="hi">→</span> Watching save files...</code>
+                </div>
+            </div>
+            <div class="step">
+                <div class="step-n"><span>03</span>Drive. Monitor. Repeat.</div>
+                <div class="step-title">Just Play the Game.</div>
+                <div class="step-desc">
+                    Fire up ATS or ETS2 and drive normally. Every job completion is detected and logged in seconds. Open the dashboard anytime to see live status, history, and standings.
+                </div>
+                <div class="step-detail">
+                    <code><span class="hi">→</span> Job started: LA → Phoenix</code>
+                    <code><span class="hi">→</span> Distance: 482 km</code>
+                    <code><span class="hi">→</span> Job complete — logged</code>
+                    <code style="color:var(--green)"><span class="hi">→</span> Revenue: +$3,240</code>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ─── FREE BANNER ─── -->
+<section id="free" class="free-banner">
+    <div class="section-inner">
+        <div class="section-label" style="justify-content:center;max-width:400px">Pricing</div>
+
+        <div class="free-grid">
+            <div class="free-item">
+                <div class="num">∞</div>
+                <div class="lbl">Drivers</div>
+            </div>
+            <div class="free-item">
+                <div class="num">∞</div>
+                <div class="lbl">VTC Size</div>
+            </div>
+            <div class="free-item">
+                <div class="num">∞</div>
+                <div class="lbl">Job History</div>
+            </div>
+            <div class="free-item">
+                <div class="num" style="color:var(--green)">$0</div>
+                <div class="lbl">Forever</div>
+            </div>
+        </div>
+
+        <div class="free-headline">THE DISPATCH IS <span style="color:var(--amber)">FREE.</span><br>FULL STOP.</div>
+        <p class="free-sub">No freemium. No trial limits. No "premium" features. Every driver, every VTC, every leaderboard — free, unlimited, always.</p>
+
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:36px">
+            <a class="btn-primary" href="/auth/login?next=/dashboard">▶ Open Dashboard</a>
+            <a class="btn-secondary" href="#features">View All Features</a>
+        </div>
+
+        <div class="compat">
+            <div class="compat-item">
+                <span class="game">American Truck Simulator</span>
+                <span class="sub">Fully Supported</span>
+            </div>
+            <div class="compat-item">
+                <span class="game">Euro Truck Simulator 2</span>
+                <span class="sub">Fully Supported</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ─── FOOTER ─── -->
+<footer>
+    <div class="footer-inner">
+        <div class="footer-top">
+            <div class="footer-brand">
+                <img src="/static/logo.png" alt="The Dispatch">
+                <p>Fleet management for the long haul. Free, unlimited, and built for the trucking community.</p>
+            </div>
+            <div class="footer-col">
+                <h4>Platform</h4>
+                <a href="#features">Features</a>
+                <a href="#how">How It Works</a>
+                <a href="#free">Pricing</a>
+                <a href="/dashboard">Dashboard</a>
+            </div>
+            <div class="footer-col">
+                <h4>Tools</h4>
+                <a href="/auth/login?next=/dashboard">My Dashboard</a>
+                <a href="/vtc">My VTC</a>
+                <a href="/leaderboard">Leaderboard</a>
+            </div>
+            <div class="footer-col">
+                <h4>Games</h4>
+                <a href="#how">American Truck Simulator</a>
+                <a href="#how">Euro Truck Simulator 2</a>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <span class="footer-copy">The Dispatch — Fleet Management Platform · Free · Unlimited</span>
+            <div class="footer-status"><span class="footer-sdot"></span>Systems Operational</div>
+        </div>
+    </div>
+</footer>
+
+<script>
+document.querySelectorAll('.db-row').forEach((row, i) => {
+    row.style.animationDelay = (i * 0.08) + 's';
+});
+
+const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+        if (e.isIntersecting) {
+            e.target.style.opacity = '1';
+            e.target.style.transform = 'translateY(0)';
+        }
+    });
+}, { threshold: 0.1 });
+
+document.querySelectorAll('.feat, .step').forEach(el => {
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(12px)';
+    el.style.transition = 'opacity 0.4s, transform 0.4s';
+    obs.observe(el);
+});
+</script>
+
 </body>
 </html>

@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% include '_head.html' %}
+    <title>{{ vtc.name }} [{{ vtc.tag }}] — Fleet · The Dispatch</title>
+</head>
+<body>
+<div class="app-layout">
+
+<aside class="sidebar">{% include '_sidebar.html' %}</aside>
+
+<div class="app-main">
+<div class="app-content">
+
+    <div class="content-header">
+        <div>
+            <h1 class="content-title">[{{ vtc.tag }}] {{ vtc.name }}</h1>
+            <div class="content-subtitle">Fleet Dashboard · {{ members | length }} member{% if members | length != 1 %}s{% endif %}</div>
+        </div>
+        <div class="content-actions">
+            <div class="live-pill"><span class="live-dot"></span>Live</div>
+            {% if is_owner %}
+            <a href="/vtc" class="btn btn-ghost btn-sm">Manage VTC</a>
+            {% endif %}
+        </div>
+    </div>
+
+    {% set net = aggregate.total_money - aggregate.total_debt %}
+
+    <div class="stats-grid" style="animation: fadeUp 0.35s both">
+        <div class="stat-card c-green" style="animation-delay:0s">
+            <div class="stat-label">Fleet Cash</div>
+            <div class="stat-value green">${{ '{:,}'.format(aggregate.total_money) }}</div>
+            <div class="stat-sub">Combined balance</div>
+        </div>
+        <div class="stat-card c-red" style="animation-delay:0.05s">
+            <div class="stat-label">Fleet Debt</div>
+            <div class="stat-value red">${{ '{:,}'.format(aggregate.total_debt) }}</div>
+            <div class="stat-sub">Combined loans</div>
+        </div>
+        <div class="stat-card c-amber" style="animation-delay:0.1s">
+            <div class="stat-label">Net Position</div>
+            <div class="stat-value {% if net >= 0 %}green{% else %}red{% endif %}">${{ '{:,}'.format(net) }}</div>
+            <div class="stat-sub">Cash minus debt</div>
+        </div>
+        <div class="stat-card" style="animation-delay:0.15s">
+            <div class="stat-label">Total XP</div>
+            <div class="stat-value amber">{{ '{:,}'.format(aggregate.total_xp) }}</div>
+            <div class="stat-sub">Fleet experience</div>
+        </div>
+        <div class="stat-card" style="animation-delay:0.2s">
+            <div class="stat-label">Distance</div>
+            <div class="stat-value">{{ '{:,}'.format(aggregate.total_distance_km) }}</div>
+            <div class="stat-sub">KM driven total</div>
+        </div>
+        <div class="stat-card" style="animation-delay:0.25s">
+            <div class="stat-label">Jobs Logged</div>
+            <div class="stat-value amber">{{ '{:,}'.format(aggregate.total_jobs) }}</div>
+            <div class="stat-sub">{{ members | length }} members · {{ aggregate.on_job }} on job</div>
+        </div>
+    </div>
+
+    <div class="sec-label">Roster — {{ members | length }} Member{% if members | length != 1 %}s{% endif %}</div>
+    <div class="member-grid-wrap">
+        {% for m in members %}
+        <div class="member-card {% if m.has_data %}online{% endif %}">
+            <div class="mc-name">
+                {{ m.discord_username }}
+                {% if m.is_owner %}
+                    <span class="badge badge-amber" style="font-size:0.48rem">OWNER</span>
+                {% else %}
+                    <span class="badge badge-muted" style="font-size:0.48rem">DRIVER</span>
+                {% endif %}
+            </div>
+            {% if m.has_data %}
+            <div class="mc-stats">
+                <div class="mc-stat">DIST <span>{{ '{:,}'.format(m.total_distance_km or 0) }} km</span></div>
+                <div class="mc-stat">XP <span>{{ '{:,}'.format(m.experience_points or 0) }}</span></div>
+                <div class="mc-stat">CASH <span>${{ '{:,}'.format(m.money or 0) }}</span></div>
+                <div class="mc-stat">JOBS <span>{{ m.job_count or 0 }}</span></div>
+            </div>
+            {% else %}
+            <div class="mc-nodata">No data — client not connected</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="grid-2">
+
+        <div class="panel">
+            <div class="panel-hd">
+                <div class="panel-title">Combined Driver Roster</div>
+                <div class="panel-badge">{{ all_drivers | length }} UNITS</div>
+            </div>
+            <div class="filter-bar">
+                <button class="filter-btn active" onclick="filterDrivers('all',this)">All</button>
+                <button class="filter-btn" onclick="filterDrivers('job',this)">On Job</button>
+                <button class="filter-btn" onclick="filterDrivers('idle',this)">Idle</button>
+            </div>
+            <div class="tbl-wrap">
+                {% if all_drivers %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th onclick="sortDrivers('unit')">Unit</th>
+                            <th onclick="sortDrivers('member')">Member</th>
+                            <th onclick="sortDrivers('hometown')">Hometown</th>
+                            <th>Location</th>
+                            <th onclick="sortDrivers('xp')">XP</th>
+                            <th onclick="sortDrivers('adr')">Haz</th>
+                            <th onclick="sortDrivers('long')">Long</th>
+                            <th onclick="sortDrivers('heavy')">Heavy</th>
+                            <th onclick="sortDrivers('status')">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="driver-body">
+                        {% for driver in all_drivers %}
+                        <tr class="driver-row"
+                            data-state="{{ driver.state }}"
+                            data-xp="{{ driver.experience_points }}"
+                            data-adr="{{ driver.adr }}"
+                            data-long="{{ driver.long_dist }}"
+                            data-heavy="{{ driver.heavy }}"
+                            data-unit="{{ driver.id | replace('driver.', '') | int }}"
+                            data-hometown="{{ driver.hometown | replace('_', ' ') | lower if driver.hometown else '' }}"
+                            data-member="{{ driver.member | lower }}">
+                            <td><span class="unit-lbl">{{ driver.id | replace('driver.', '') }}</span></td>
+                            <td style="font-size:13px;font-weight:500;color:var(--text-muted)">{{ driver.member }}</td>
+                            <td style="color:var(--text-primary);text-transform:capitalize">{{ driver.hometown | replace('_', ' ') | title if driver.hometown and driver.hometown != '--' else '—' }}</td>
+                            <td style="color:var(--text-primary);text-transform:capitalize">{{ driver.current_city | replace('_', ' ') | title if driver.current_city and driver.current_city != '--' else '—' }}</td>
+                            <td class="num mono-val">{{ '{:,}'.format(driver.experience_points) }}</td>
+                            <td><div class="pips">{% for i in range(5) %}<div class="pip {% if i < driver.adr %}on{% endif %}"></div>{% endfor %}</div></td>
+                            <td><div class="pips">{% for i in range(5) %}<div class="pip {% if i < driver.long_dist %}on{% endif %}"></div>{% endfor %}</div></td>
+                            <td><div class="pips">{% for i in range(5) %}<div class="pip {% if i < driver.heavy %}on{% endif %}"></div>{% endfor %}</div></td>
+                            <td>
+                                {% if driver.state == 2 %}
+                                    <span class="badge badge-green">On Job</span>
+                                {% else %}
+                                    <span class="badge badge-muted">Idle</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}
+                <div class="empty-state"><p>No driver data — members need to connect the client</p></div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-hd">
+                <div class="panel-title">Dispatch Log</div>
+                <div class="panel-badge">{{ recent_jobs | length }} RECENT</div>
+            </div>
+            <div class="feed">
+                {% if recent_jobs %}
+                {% for job in recent_jobs %}
+                <div class="feed-item">
+                    <div class="feed-route">
+                        <span class="feed-city">{{ job.source_city | replace('_', ' ') | upper }}</span>
+                        <span class="feed-arrow">→</span>
+                        <span class="feed-city">{{ job.destination_city | replace('_', ' ') | upper }}</span>
+                    </div>
+                    <div class="feed-meta">
+                        <span class="feed-rev">+${{ '{:,}'.format(job.revenue) }}</span>
+                        {% if job.distance_km %}<span class="feed-dist">{{ job.distance_km }} km</span>{% endif %}
+                        {% if job.cargo %}<span class="feed-cargo">{{ job.cargo | replace('_', ' ') }}</span>{% endif %}
+                    </div>
+                    <div class="feed-member">{{ player_names.get(job.player_id, 'Unknown') }} · {{ job.logged_at.strftime('%m/%d %H:%M') }}</div>
+                </div>
+                {% endfor %}
+                {% else %}
+                <div class="empty-state"><p>No jobs logged — connect the client and complete a delivery</p></div>
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+
+</div><!-- /app-content -->
+
+<div class="statusbar">
+    <span><span style="color:var(--green)">●</span>&nbsp;[{{ vtc.tag }}] {{ vtc.name }} — Fleet Online</span>
+    <span>{{ members | length }} member{% if members | length != 1 %}s{% endif %} · {{ aggregate.total_drivers }} drivers · {{ aggregate.on_job }} on job</span>
+    {% if is_owner %}
+    <span>Code <span class="sb-val">{{ vtc.access_code }}</span></span>
+    {% else %}
+    <span>THE DISPATCH <span class="sb-val">v0.3.0</span></span>
+    {% endif %}
+</div>
+</div><!-- /app-main -->
+
+</div><!-- /app-layout -->
+
+<script>
+let currentFilter = 'all';
+
+function filterDrivers(f, btn) {
+    currentFilter = f;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyFilter();
+}
+
+function applyFilter() {
+    document.querySelectorAll('.driver-row').forEach(row => {
+        const s = parseInt(row.dataset.state);
+        if (currentFilter === 'all') row.style.display = '';
+        else if (currentFilter === 'job') row.style.display = s === 2 ? '' : 'none';
+        else row.style.display = s !== 2 ? '' : 'none';
+    });
+}
+
+function sortDrivers(field) {
+    document.querySelectorAll('thead th').forEach(h => h.classList.remove('sorted'));
+    event.currentTarget.classList.add('sorted');
+    const tbody = document.getElementById('driver-body');
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll('.driver-row'));
+    rows.sort((a, b) => {
+        if (field === 'xp')       return parseInt(b.dataset.xp) - parseInt(a.dataset.xp);
+        if (field === 'adr')      return parseInt(b.dataset.adr) - parseInt(a.dataset.adr);
+        if (field === 'long')     return parseInt(b.dataset.long) - parseInt(a.dataset.long);
+        if (field === 'heavy')    return parseInt(b.dataset.heavy) - parseInt(a.dataset.heavy);
+        if (field === 'hometown') return a.dataset.hometown.localeCompare(b.dataset.hometown);
+        if (field === 'status')   return parseInt(b.dataset.state) - parseInt(a.dataset.state);
+        if (field === 'unit')     return parseInt(a.dataset.unit) - parseInt(b.dataset.unit);
+        if (field === 'member')   return a.dataset.member.localeCompare(b.dataset.member);
+        return 0;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+    applyFilter();
+}
+</script>
+</body>
+</html>

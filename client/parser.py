@@ -46,7 +46,6 @@ def parse_finances(content):
 def parse_player(content):
     player = {}
 
-    # grab the economy block for top-level stats
     economy_block = re.search(r'economy\s*:.*?\{(.*?)\n\}', content, re.DOTALL)
     if economy_block:
         block = economy_block.group(1)
@@ -70,7 +69,7 @@ def parse_drivers(content):
 
     for driver_id, block in driver_blocks:
         driver = {'id': driver_id}
-        
+
         for field in ['adr', 'long_dist', 'heavy', 'fragile', 'urgent', 'mechanical']:
             match = re.search(rf'{field}:\s*(\d+)', block)
             driver[field] = int(match.group(1)) if match else 0
@@ -85,7 +84,13 @@ def parse_drivers(content):
         state = re.search(r'state:\s*(\d+)', block)
         driver['state'] = int(state.group(1)) if state else 0
 
-        drivers.append(driver)
+        # Only include drivers that have a valid hometown (actually hired)
+        hometown = driver.get('hometown', '')
+        if hometown and hometown not in ('', '--', '""', '"'):
+            drivers.append(driver)
+
+    # Sort by XP descending by default
+    drivers.sort(key=lambda d: d['experience_points'], reverse=True)
 
     return drivers
 
@@ -112,7 +117,7 @@ def parse_jobs(content):
 
         revenue_val = int(revenue.group(1)) if revenue else 0
         if revenue_val == 0:
-            continue  # skip empty/fuel-only entries
+            continue
 
         jobs.append({
             'revenue': revenue_val,
@@ -133,19 +138,19 @@ def parse_jobs(content):
 
 
 if __name__ == '__main__':
-    import json
     import sys
 
     path = sys.argv[1] if len(sys.argv) > 1 else 'game-decoded.sii'
     data = parse_sii(path)
 
-    print(f"💰 Money: ${data['finances']['money']:,}")
-    print(f"💸 Total debt: ${data['finances']['total_debt']:,}")
-    print(f"📦 Loans: {len(data['finances']['loans'])}")
-    print(f"🏆 XP: {data['player']['experience_points']:,}")
-    print(f"🛣️  Distance: {data['player']['total_distance_km']:,} km")
-    print(f"👥 Drivers: {len(data['drivers'])}")
-    print(f"📋 Jobs: {len(data['jobs'])}")
-    print(f"\nLast 3 jobs:")
-    for job in data['jobs'][:3]:
-        print(f"  {job['source_city']} → {job['destination_city']} | ${job['revenue']:,} | {job['cargo']}")
+    print(f"Money: ${data['finances']['money']:,}")
+    print(f"Total debt: ${data['finances']['total_debt']:,}")
+    print(f"Loans: {len(data['finances']['loans'])}")
+    print(f"XP: {data['player']['experience_points']:,}")
+    print(f"Distance: {data['player']['total_distance_km']:,} km")
+    print(f"Drivers (hired only): {len(data['drivers'])}")
+    print(f"Jobs: {len(data['jobs'])}")
+    if data['jobs']:
+        print(f"\nLast 3 jobs:")
+        for job in data['jobs'][:3]:
+            print(f"  {job['source_city']} → {job['destination_city']} | ${job['revenue']:,} | {job['cargo']}")

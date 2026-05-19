@@ -1,17 +1,20 @@
+import webbrowser
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 import time
 import os
-import json
 import requests
 import threading
 import subprocess
 import tempfile
-import shutil
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from parser import parse_sii
 from dotenv import load_dotenv
 import pystray
 from PIL import Image, ImageDraw
+from dispatcher import generate_and_play, build_dispatch_messages
+from telemetry import start_telemetry_loop
 
 load_dotenv()
 
@@ -20,6 +23,8 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN', '')
 DISCORD_ID = os.getenv('DISCORD_ID', '')
 DISCORD_USERNAME = os.getenv('DISCORD_USERNAME', '')
 SAVE_PATH = os.getenv('SAVE_PATH', '')
+
+last_snapshot = {}
 
 def find_save_file():
     steam_userdata = os.path.expandvars(r'%PROGRAMFILES(X86)%\Steam\userdata')
@@ -40,7 +45,6 @@ def find_save_file():
     return None
 
 def decrypt_save(filepath):
-    print(f'[Dispatch] Looking for SII_Decrypt at: {os.path.join(os.path.dirname(os.path.abspath(__file__)), "SII_Decrypt.exe")}')
     decrypt_exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'SII_Decrypt.exe')
     if not os.path.exists(decrypt_exe):
         print('[Dispatch] SII_Decrypt.exe not found in client folder')
@@ -65,6 +69,8 @@ def decrypt_save(filepath):
         return None
 
 def push_data(filepath):
+    global last_snapshot
+
     decrypted = decrypt_save(filepath)
     if not decrypted:
         print('[Dispatch] Skipping push — could not decrypt save')
@@ -72,6 +78,14 @@ def push_data(filepath):
 
     try:
         data = parse_sii(decrypted)
+
+        messages = build_dispatch_messages(last_snapshot, data)
+        for msg in messages:
+            print(f'[Dispatch] 📻 {msg}')
+            generate_and_play(msg)
+
+        last_snapshot = data
+
         response = requests.post(
             f'{SERVER_URL}/api/snapshot',
             json=data,
@@ -119,13 +133,78 @@ def start_watcher(filepath):
     print(f'[Dispatch] Watching {filepath}')
     return observer
 
+def run_auth_flow():
+    print('[Dispatch] No Discord token found. Starting auth flow...')
+
+    auth_result = {}
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+
+            if 'token' in params:
+                auth_result['token'] = params['token'][0]
+                auth_result['discord_id'] = params['discord_id'][0]
+                auth_result['discord_username'] = params['discord_username'][0]
+
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                self.wfile.write(b'''
+                    <html><body style="background:#0f1117;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+                    <div style="text-align:center;">
+                    <h1 style="color:#f5a623;">The Dispatch</h1>
+                    <p>Authentication successful. You can close this window.</p>
+                    </div></body></html>
+                ''')
+            else:
+                self.send_response(400)
+                self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = HTTPServer(('localhost', 8080), CallbackHandler)
+    webbrowser.open(f'{SERVER_URL}/auth/login?client_callback=http://localhost:8080/callback')
+
+    print('[Dispatch] Waiting for Discord login...')
+    server.handle_request()
+
+    if auth_result:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+        with open(env_path, 'w') as f:
+            f.write(f'SERVER_URL={SERVER_URL}\n')
+            f.write(f'DISCORD_TOKEN={auth_result["token"]}\n')
+            f.write(f'DISCORD_ID={auth_result["discord_id"]}\n')
+            f.write(f'DISCORD_USERNAME={auth_result["discord_username"]}\n')
+            f.write(f'SAVE_PATH={SAVE_PATH}\n')
+
+        print(f'[Dispatch] Authenticated as {auth_result["discord_username"]}')
+        return auth_result
+    else:
+        print('[Dispatch] Auth failed.')
+        return None
+
 def main():
+    global DISCORD_TOKEN, DISCORD_ID, DISCORD_USERNAME
+
+    if not DISCORD_TOKEN or DISCORD_TOKEN.strip() == '' or DISCORD_TOKEN == 'your_discord_token_here':
+        result = run_auth_flow()
+        if not result:
+            return
+        load_dotenv(override=True)
+        DISCORD_TOKEN = os.getenv('DISCORD_TOKEN', '')
+        DISCORD_ID = os.getenv('DISCORD_ID', '')
+        DISCORD_USERNAME = os.getenv('DISCORD_USERNAME', '')
+
     filepath = SAVE_PATH or find_save_file()
     if not filepath:
         print('[Dispatch] Could not find ATS save file. Set SAVE_PATH in .env')
         return
 
     print(f'[Dispatch] Found save at: {filepath}')
+    start_telemetry_loop()
     push_data(filepath)
 
     observer = start_watcher(filepath)

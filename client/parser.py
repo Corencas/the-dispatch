@@ -9,6 +9,7 @@ def parse_sii(filepath):
         'player': parse_player(content),
         'drivers': parse_drivers(content),
         'jobs': parse_jobs(content),
+        'freight_market': parse_freight_market(content),
     }
 
     return result
@@ -137,6 +138,107 @@ def parse_jobs(content):
     return jobs
 
 
+def parse_freight_market(content):
+    """
+    Parse available job offers from the ATS/ETS2 save file.
+    Returns a list of dicts sorted by revenue descending.
+
+    ATS/ETS2 save format (post-SII_Decrypt):
+      economy.job_offer.N : .job_offer {
+          source_city: los_angeles
+          target_city: phoenix
+          cargo: cargo.flat_boards
+          revenue: 14500
+          distance: 372
+          ...
+      }
+
+    The TYPE is `.job_offer` (after the colon), not the block name.
+    The legacy inline form `job_offer : token { ... }` is also attempted as a fallback.
+    """
+    import logging
+    _log = logging.getLogger('parser')
+
+    # Primary: match blocks whose TYPE is .job_offer / job_offer
+    # Format: "some.name : .job_offer {\n  fields\n}"
+    blocks = re.findall(
+        r'[^\n]+:\s*\.?job_offer\s*\{(.*?)(?:\r?\n)\}',
+        content, re.DOTALL
+    )
+
+    # Fallback: some game versions or mods use inline syntax
+    if not blocks:
+        blocks = re.findall(
+            r'job_offer\s*:\s*\S+\s*\{([^}]+)\}',
+            content, re.DOTALL
+        )
+
+    _log.info(f"freight market: {len(blocks)} raw job_offer blocks found in save")
+    print(f'[Parser] Freight market: {len(blocks)} job_offer blocks found in save')
+
+    def _clean(s, is_city=False):
+        """Strip internal namespace prefixes and convert to Title Case."""
+        s = s.strip().strip('"')
+        # "company.weigh_station_ats.los_angeles" → "Los Angeles"
+        # "cargo.coil_steel" → "Coil Steel"
+        # "city.los_angeles" → "Los Angeles"
+        parts = s.split('.')
+        name = parts[-1]
+        return name.replace('_', ' ').title()
+
+    for block in blocks:
+        # City fields: ATS uses source_city / target_city;
+        # some versions use destination_city instead of target_city.
+        src_city_m = re.search(r'source_city\s*:\s*(\S+)', block)
+        tgt_city_m = re.search(r'(?:target_city|destination_city)\s*:\s*(\S+)', block)
+        src_co_m   = re.search(r'source_company\s*:\s*(\S+)', block)
+        tgt_co_m   = re.search(r'(?:target_company|destination_company)\s*:\s*(\S+)', block)
+        cargo_m    = re.search(r'\bcargo\s*:\s*(\S+)', block)
+        # ATS uses "distance" (km); some versions use "shortest_path_distance"
+        dist_m     = re.search(r'(?:\bdistance\b|shortest_path_distance)\s*:\s*(\d+)', block)
+        rev_m      = re.search(r'\brevenue\s*:\s*(\d+)', block)
+        mass_m     = re.search(r'cargo_mass\s*:\s*([\d.]+)', block)
+        urgency_m  = re.search(r'\burgency\s*:\s*(\d+)', block)
+        expiry_m   = re.search(r'expiration_time\s*:\s*(\d+)', block)
+
+        if not rev_m:
+            continue
+        rev = int(rev_m.group(1))
+        if rev <= 0:
+            continue
+
+        # City: prefer explicit city field, fall back to last dotted segment of company token
+        def _city_from_token(city_m, company_m):
+            if city_m:
+                return _clean(city_m.group(1))
+            if company_m:
+                # e.g. "company.carrier_station.los_angeles" → "Los Angeles"
+                return _clean(company_m.group(1))
+            return ''
+
+        src_city = _city_from_token(src_city_m, src_co_m)
+        tgt_city = _city_from_token(tgt_city_m, tgt_co_m)
+
+        if not src_city or not tgt_city:
+            continue
+
+        jobs.append({
+            'source_city':         src_city,
+            'destination_city':    tgt_city,
+            'source_company':      _clean(src_co_m.group(1)) if src_co_m else '',
+            'destination_company': _clean(tgt_co_m.group(1)) if tgt_co_m else '',
+            'cargo':               _clean(cargo_m.group(1)) if cargo_m else '',
+            'distance_km':         int(dist_m.group(1)) if dist_m else 0,
+            'revenue':             rev,
+            'cargo_mass_t':        float(mass_m.group(1)) if mass_m else 0.0,
+            'urgency':             int(urgency_m.group(1)) if urgency_m else 0,
+            'expiration_time':     int(expiry_m.group(1)) if expiry_m else 0,
+        })
+
+    jobs.sort(key=lambda j: j['revenue'], reverse=True)
+    return jobs
+
+
 if __name__ == '__main__':
     import sys
 
@@ -154,3 +256,8 @@ if __name__ == '__main__':
         print(f"\nLast 3 jobs:")
         for job in data['jobs'][:3]:
             print(f"  {job['source_city']} → {job['destination_city']} | ${job['revenue']:,} | {job['cargo']}")
+    print(f"Freight market: {len(data['freight_market'])} jobs available")
+    if data['freight_market']:
+        print(f"\nTop 3 market jobs:")
+        for job in data['freight_market'][:3]:
+            print(f"  {job['source_city']} → {job['destination_city']} | ${job['revenue']:,} | {job['cargo']} | {job['distance_km']} km")

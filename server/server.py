@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, render_template, redirect, url_for, session
 from flask_cors import CORS
-from models import db, Player, Snapshot, VTC, Job
+from models import db, Player, Snapshot, VTC, Job, PlayerPreferences, VoiceInteraction
 from datetime import datetime
 from functools import wraps
 from dotenv import load_dotenv
@@ -807,6 +807,159 @@ def leaderboard_vtc(vtc_id):
         vtc=vtc,
         discord_id=discord_id,
         discord_username=discord_username,
+    )
+
+
+# ─── ASSISTANT PREFERENCES ──────────────────────────────────────
+
+_DEFAULT_PREFS = {
+    'personality': 'professional',
+    'wake_word_enabled': False,
+    'wake_word_keyword': 'porcupine',
+    'push_to_talk_key': 'F9',
+    'preferred_cargo': [],
+    'avoided_cargo': [],
+    'preferred_min_distance': 0,
+    'preferred_max_distance': 9999,
+    'preferred_min_revenue': 0,
+    'target_weekly_earnings': 0,
+    'preferred_cities': [],
+    'avoided_cities': [],
+    'notes': '',
+}
+
+
+def _get_or_create_prefs(player_id: int) -> PlayerPreferences:
+    prefs = PlayerPreferences.query.filter_by(player_id=player_id).first()
+    if not prefs:
+        prefs = PlayerPreferences(player_id=player_id, data=dict(_DEFAULT_PREFS))
+        db.session.add(prefs)
+        db.session.flush()
+    return prefs
+
+
+@app.route('/preferences')
+@require_discord
+def preferences_page():
+    discord_id       = session['discord_id']
+    discord_username = session['discord_username']
+    player = Player.query.filter_by(discord_id=discord_id).first()
+    if not player:
+        return redirect(url_for('dashboard'))
+
+    prefs_obj = _get_or_create_prefs(player.id)
+    db.session.commit()
+    prefs = {**_DEFAULT_PREFS, **(prefs_obj.data or {})}
+
+    return render_template('preferences.html',
+        discord_id=discord_id,
+        discord_username=discord_username,
+        prefs=prefs,
+        saved=request.args.get('saved'),
+    )
+
+
+@app.route('/preferences', methods=['POST'])
+@require_discord
+def preferences_save():
+    discord_id = session['discord_id']
+    player = Player.query.filter_by(discord_id=discord_id).first()
+    if not player:
+        return redirect(url_for('dashboard'))
+
+    form = request.form
+
+    def _csv_list(key):
+        raw = form.get(key, '')
+        return [x.strip().lower() for x in raw.split(',') if x.strip()]
+
+    new_data = {
+        'personality':            form.get('personality', 'professional'),
+        'wake_word_enabled':      form.get('wake_word_enabled') == 'on',
+        'wake_word_keyword':      form.get('wake_word_keyword', 'porcupine').strip(),
+        'push_to_talk_key':       form.get('push_to_talk_key', 'F9').strip().upper(),
+        'preferred_cargo':        _csv_list('preferred_cargo'),
+        'avoided_cargo':          _csv_list('avoided_cargo'),
+        'preferred_min_distance': int(form.get('preferred_min_distance') or 0),
+        'preferred_max_distance': int(form.get('preferred_max_distance') or 9999),
+        'preferred_min_revenue':  int(form.get('preferred_min_revenue') or 0),
+        'target_weekly_earnings': int(form.get('target_weekly_earnings') or 0),
+        'preferred_cities':       _csv_list('preferred_cities'),
+        'avoided_cities':         _csv_list('avoided_cities'),
+        'notes':                  form.get('notes', '').strip()[:500],
+    }
+
+    prefs_obj = _get_or_create_prefs(player.id)
+    prefs_obj.data = new_data
+    prefs_obj.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    return redirect(url_for('preferences_page', saved=1))
+
+
+@app.route('/api/preferences/<discord_id>', methods=['GET'])
+def api_get_preferences(discord_id):
+    """Client fetches preferences on startup to sync local preferences.json."""
+    player = Player.query.filter_by(discord_id=discord_id).first()
+    if not player:
+        return jsonify({'error': 'Player not found'}), 404
+
+    prefs_obj = PlayerPreferences.query.filter_by(player_id=player.id).first()
+    data = {**_DEFAULT_PREFS, **(prefs_obj.data or {})} if prefs_obj else dict(_DEFAULT_PREFS)
+    return jsonify(data), 200
+
+
+# ─── VOICE INTERACTIONS API ─────────────────────────────────────
+
+@app.route('/api/interactions', methods=['POST'])
+def receive_interaction():
+    """Client pushes a voice interaction entry after each conversation turn."""
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer '):
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    discord_id = request.headers.get('X-Discord-ID')
+    if not discord_id:
+        return jsonify({'error': 'Missing Discord ID'}), 400
+
+    data = request.get_json()
+    if not data or not data.get('user') or not data.get('assistant'):
+        return jsonify({'error': 'Missing fields'}), 400
+
+    player = Player.query.filter_by(discord_id=discord_id).first()
+    if not player:
+        return jsonify({'error': 'Player not found'}), 404
+
+    interaction = VoiceInteraction(
+        player_id=player.id,
+        client_ts=data.get('timestamp', ''),
+        user_text=data['user'][:1000],
+        assistant_text=data['assistant'][:2000],
+    )
+    db.session.add(interaction)
+    db.session.commit()
+
+    return jsonify({'status': 'ok'}), 200
+
+
+@app.route('/assistant/history')
+@require_discord
+def assistant_history():
+    discord_id       = session['discord_id']
+    discord_username = session['discord_username']
+    player = Player.query.filter_by(discord_id=discord_id).first()
+
+    interactions = []
+    if player:
+        interactions = VoiceInteraction.query\
+            .filter_by(player_id=player.id)\
+            .order_by(VoiceInteraction.logged_at.desc())\
+            .limit(50).all()
+
+    return render_template('assistant_history.html',
+        discord_id=discord_id,
+        discord_username=discord_username,
+        interactions=interactions,
     )
 
 

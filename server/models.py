@@ -70,3 +70,29 @@ class Job(db.Model):
             name='uq_job_identity'
         ),
     )
+
+
+class PlayerPreferences(db.Model):
+    """Stores voice assistant preferences per player, synced from the client."""
+    __tablename__ = 'player_preferences'
+    id         = db.Column(db.Integer, primary_key=True)
+    player_id  = db.Column(db.Integer, db.ForeignKey('players.id'), nullable=False, unique=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Full preferences blob mirroring client/preferences.json
+    data       = db.Column(db.JSON, nullable=False, default=dict)
+
+    player = db.relationship('Player', backref=db.backref('preferences', uselist=False))
+
+
+class VoiceInteraction(db.Model):
+    """Records voice interactions pushed by the client for the dashboard log."""
+    __tablename__ = 'voice_interactions'
+    id            = db.Column(db.Integer, primary_key=True)
+    player_id     = db.Column(db.Integer, db.ForeignKey('players.id'), nullable=False)
+    logged_at     = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    # ISO timestamp as recorded by the client (may differ from server wall clock)
+    client_ts     = db.Column(db.String(32))
+    user_text     = db.Column(db.Text, nullable=False)
+    assistant_text = db.Column(db.Text, nullable=False)
+
+    player = db.relationship('Player', backref='voice_interactions')

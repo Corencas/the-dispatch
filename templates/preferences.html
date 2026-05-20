@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% include '_head.html' %}
+    <title>AI Dispatch Preferences · The Dispatch</title>
+</head>
+<body>
+<div class="app-layout">
+
+<aside class="sidebar">{% include '_sidebar.html' %}</aside>
+
+<div class="app-main">
+<div class="app-content">
+
+    <div class="content-header">
+        <div>
+            <h1 class="content-title">Dispatch Preferences</h1>
+            <div class="content-subtitle">Voice assistant settings and freight filters</div>
+        </div>
+        {% if saved %}
+        <div class="content-actions">
+            <div class="live-pill" style="background:var(--green-dim);color:var(--green);border-color:var(--green)">
+                <span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;margin-right:6px"></span>Saved
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+<form method="POST" action="/preferences">
+
+<div class="grid-2" style="gap:20px;margin-bottom:20px">
+
+    <!-- Voice Settings -->
+    <div class="panel">
+        <div class="panel-hd">
+            <div class="panel-title">Voice Settings</div>
+        </div>
+        <div style="padding:16px;display:flex;flex-direction:column;gap:16px">
+
+            <div class="form-group">
+                <label class="form-label">Dispatcher Personality</label>
+                <select name="personality" class="form-input form-select">
+                    {% for p in ['professional', 'friendly', 'tactical', 'female_professional'] %}
+                    <option value="{{ p }}" {% if prefs.personality == p %}selected{% endif %}>
+                        {{ p | replace('_', ' ') | title }}
+                        {% if p == 'professional' %} — Guy Neural (calm male)
+                        {% elif p == 'friendly' %} — Davis Neural (casual male)
+                        {% elif p == 'tactical' %} — Tony Neural (authoritative)
+                        {% elif p == 'female_professional' %} — Jenny Neural
+                        {% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+                <div class="form-hint">Affects voice and tone of all spoken responses.</div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Push-to-Talk Key</label>
+                <input type="text" name="push_to_talk_key"
+                       value="{{ prefs.push_to_talk_key }}"
+                       class="form-input" maxlength="10"
+                       placeholder="F9">
+                <div class="form-hint">Hold this key while speaking. Default: F9.</div>
+            </div>
+
+            <div class="form-group">
+                <div class="form-row">
+                    <label class="form-label" style="margin:0">Wake Word Mode</label>
+                    <label class="toggle-wrap">
+                        <input type="checkbox" name="wake_word_enabled"
+                               {% if prefs.wake_word_enabled %}checked{% endif %}>
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                    </label>
+                </div>
+                <div class="form-hint">Requires PICOVOICE_ACCESS_KEY in client/.env</div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Wake Word Keyword</label>
+                <select name="wake_word_keyword" class="form-input form-select">
+                    {% for kw in ['porcupine', 'bumblebee', 'hey barista', 'hey google', 'hey siri', 'picovoice', 'jarvis', 'americano', 'grasshopper'] %}
+                    <option value="{{ kw }}" {% if prefs.wake_word_keyword == kw %}selected{% endif %}>{{ kw | title }}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-hint">Built-in keywords. For "Hey Dispatch" train a custom model at console.picovoice.ai and set WAKE_WORD_KEYWORD_PATH.</div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Freight Filters -->
+    <div class="panel">
+        <div class="panel-hd">
+            <div class="panel-title">Freight Filters</div>
+        </div>
+        <div style="padding:16px;display:flex;flex-direction:column;gap:16px">
+
+            <div class="form-group">
+                <label class="form-label">Preferred Cargo Types</label>
+                <input type="text" name="preferred_cargo"
+                       value="{{ prefs.preferred_cargo | join(', ') }}"
+                       class="form-input" placeholder="lumber, steel, grain">
+                <div class="form-hint">Comma-separated. These loads get ranked higher.</div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Avoided Cargo Types</label>
+                <input type="text" name="avoided_cargo"
+                       value="{{ prefs.avoided_cargo | join(', ') }}"
+                       class="form-input" placeholder="explosives, hazmat">
+                <div class="form-hint">Comma-separated. These loads are filtered out.</div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Distance Range (km)</label>
+                <div style="display:flex;gap:10px;align-items:center">
+                    <input type="number" name="preferred_min_distance"
+                           value="{{ prefs.preferred_min_distance }}"
+                           class="form-input" min="0" style="flex:1" placeholder="0">
+                    <span style="color:var(--text-muted)">–</span>
+                    <input type="number" name="preferred_max_distance"
+                           value="{{ prefs.preferred_max_distance }}"
+                           class="form-input" min="0" style="flex:1" placeholder="9999">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Minimum Revenue ($)</label>
+                <input type="number" name="preferred_min_revenue"
+                       value="{{ prefs.preferred_min_revenue }}"
+                       class="form-input" min="0" placeholder="0">
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Target Weekly Earnings ($)</label>
+                <input type="number" name="target_weekly_earnings"
+                       value="{{ prefs.target_weekly_earnings }}"
+                       class="form-input" min="0" placeholder="0">
+                <div class="form-hint">Used by the assistant for weekly progress reports.</div>
+            </div>
+
+        </div>
+    </div>
+
+</div>
+
+<!-- City Preferences + Notes -->
+<div class="panel" style="margin-bottom:20px">
+    <div class="panel-hd">
+        <div class="panel-title">City & Route Preferences</div>
+    </div>
+    <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+        <div class="form-group">
+            <label class="form-label">Preferred Destination Cities</label>
+            <input type="text" name="preferred_cities"
+                   value="{{ prefs.preferred_cities | join(', ') }}"
+                   class="form-input" placeholder="phoenix, denver, seattle">
+            <div class="form-hint">Routes ending here get ranked higher.</div>
+        </div>
+
+        <div class="form-group">
+            <label class="form-label">Avoided Cities</label>
+            <input type="text" name="avoided_cities"
+                   value="{{ prefs.avoided_cities | join(', ') }}"
+                   class="form-input" placeholder="los angeles, chicago">
+            <div class="form-hint">Routes through these cities are deprioritized.</div>
+        </div>
+
+        <div class="form-group" style="grid-column:1/-1">
+            <label class="form-label">Driver Notes</label>
+            <textarea name="notes" class="form-input form-textarea"
+                      placeholder="Free-text notes the assistant will keep in mind. E.g. 'I prefer night driving' or 'avoid mountain passes in winter'."
+                      maxlength="500">{{ prefs.notes }}</textarea>
+            <div class="form-hint">Max 500 characters. Included in every AI context.</div>
+        </div>
+
+    </div>
+</div>
+
+<!-- Voice Commands Reference -->
+<div class="panel" style="margin-bottom:20px">
+    <div class="panel-hd">
+        <div class="panel-title">Voice Command Reference</div>
+        <div class="panel-badge">HOLD {{ prefs.push_to_talk_key }} TO SPEAK</div>
+    </div>
+    <div style="padding:16px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 24px">
+            {% set cmds = [
+                ('"What jobs are available from [city]?"', 'Shows filtered market from that city'),
+                ('"What\'s my best paying option?"', 'Top revenue job right now'),
+                ('"How much have I made today?"', 'Session earnings summary'),
+                ('"What\'s my fleet status?"', 'All drivers — on job vs idle'),
+                ('"Which drivers are idle?"', 'Lists available units and locations'),
+                ('"Recommend my next run"', 'AI picks the best job for your preferences'),
+                ('"What\'s my fuel situation?"', 'Current fuel level and warning'),
+                ('"Brief me"', 'Full status: fleet, finances, top jobs'),
+                ('"Remember I prefer [cargo]"', 'Updates preferred cargo list'),
+                ('"Remember I don\'t like hauling [cargo]"', 'Adds to avoided list'),
+                ('"Reset my preferences"', 'Clears all preferences to defaults'),
+            ] %}
+            {% for cmd, desc in cmds %}
+            <div style="display:flex;flex-direction:column;gap:2px;padding:8px;background:var(--surface-raised);border-radius:4px;border:1px solid var(--border)">
+                <div style="font-family:monospace;font-size:12px;color:var(--amber)">{{ cmd }}</div>
+                <div style="font-size:12px;color:var(--text-secondary)">{{ desc }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<div style="display:flex;gap:12px;justify-content:flex-end">
+    <a href="/dashboard" class="btn btn-ghost">Cancel</a>
+    <button type="submit" class="btn btn-amber">Save Preferences</button>
+</div>
+
+</form>
+
+</div><!-- /app-content -->
+
+<div class="statusbar">
+    <span>Dispatch AI Settings</span>
+    <span>{{ discord_username }}</span>
+    <span>THE DISPATCH <span class="sb-val">v0.3.0</span></span>
+</div>
+</div><!-- /app-main -->
+
+</div><!-- /app-layout -->
+
+<style>
+.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0.05em; text-transform: uppercase; }
+.form-input {
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+    color: var(--text-primary);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: inherit;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.form-input:focus { border-color: var(--amber); }
+.form-select { cursor: pointer; }
+.form-textarea { resize: vertical; min-height: 72px; }
+.form-hint { font-size: 11px; color: var(--text-muted); }
+.form-row { display: flex; align-items: center; justify-content: space-between; }
+
+/* Toggle switch */
+.toggle-wrap { display: flex; align-items: center; cursor: pointer; }
+.toggle-wrap input[type=checkbox] { display: none; }
+.toggle-track {
+    width: 36px; height: 20px;
+    background: var(--border-strong);
+    border-radius: 10px;
+    position: relative;
+    transition: background 0.2s;
+}
+.toggle-wrap input:checked + .toggle-track { background: var(--amber); }
+.toggle-thumb {
+    width: 14px; height: 14px;
+    background: #fff;
+    border-radius: 50%;
+    position: absolute;
+    top: 3px; left: 3px;
+    transition: left 0.2s;
+}
+.toggle-wrap input:checked + .toggle-track .toggle-thumb { left: 19px; }
+
+option { background: var(--surface-raised); }
+</style>
+</body>
+</html>

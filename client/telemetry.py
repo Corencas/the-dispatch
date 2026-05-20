@@ -58,6 +58,12 @@ def start_telemetry_loop():
             t = get_telemetry()
             if t:
                 push_telemetry(t)
+                # Feed live telemetry to the assistant for context-aware responses
+                try:
+                    import assistant
+                    assistant.state.update_telemetry(t)
+                except Exception:
+                    pass
             time.sleep(2)
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()

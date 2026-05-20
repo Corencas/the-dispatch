@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% include '_head.html' %}
+    <title>Dispatch Log · The Dispatch</title>
+</head>
+<body>
+<div class="app-layout">
+
+<aside class="sidebar">{% include '_sidebar.html' %}</aside>
+
+<div class="app-main">
+<div class="app-content">
+
+    <div class="content-header">
+        <div>
+            <h1 class="content-title">Dispatch Log</h1>
+            <div class="content-subtitle">Voice interaction history — last 50 exchanges</div>
+        </div>
+        <div class="content-actions">
+            <a href="/preferences" class="btn btn-ghost btn-sm">Settings</a>
+        </div>
+    </div>
+
+{% if not interactions %}
+<div class="no-data-state">
+    <h2>No Interactions Yet</h2>
+    <p>Hold your push-to-talk key (default: F9) while the client is running and speak to the dispatch AI.<br>
+    Your conversation history will appear here.</p>
+    <a href="/preferences" class="btn btn-amber">Configure Voice Assistant</a>
+</div>
+{% else %}
+
+<div class="panel">
+    <div class="panel-hd">
+        <div class="panel-title">Conversation History</div>
+        <div class="panel-badge">{{ interactions | length }} ENTRIES</div>
+    </div>
+
+    <div class="dispatch-log">
+        {% for ix in interactions %}
+        <div class="log-entry">
+            <div class="log-ts">{{ ix.logged_at.strftime('%m/%d %H:%M:%S') }}</div>
+
+            {% if ix.user_text.startswith('[auto:') or ix.user_text.startswith('[proactive:') %}
+            <div class="log-auto-tag">AUTO BRIEFING</div>
+            {% else %}
+            <div class="log-bubble log-user">
+                <div class="log-role">DRIVER</div>
+                <div class="log-text">{{ ix.user_text }}</div>
+            </div>
+            {% endif %}
+
+            <div class="log-bubble log-ai">
+                <div class="log-role">DISPATCH</div>
+                <div class="log-text">{{ ix.assistant_text }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+{% endif %}
+
+</div><!-- /app-content -->
+
+<div class="statusbar">
+    <span>Dispatch Log</span>
+    <span>{{ discord_username }}</span>
+    <span>THE DISPATCH <span class="sb-val">v0.3.0</span></span>
+</div>
+</div><!-- /app-main -->
+
+</div><!-- /app-layout -->
+
+<style>
+.dispatch-log {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.log-entry {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.log-entry:last-child { border-bottom: none; }
+
+.log-ts {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'Share Tech Mono', monospace, monospace;
+    letter-spacing: 0.08em;
+}
+
+.log-auto-tag {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--amber);
+    background: var(--amber-dim);
+    border: 1px solid rgba(245, 166, 35, 0.25);
+    padding: 2px 8px;
+    border-radius: 3px;
+    width: fit-content;
+}
+
+.log-bubble {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.log-role {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--text-muted);
+}
+
+.log-user .log-role { color: var(--amber); }
+.log-ai .log-role   { color: var(--green); }
+
+.log-text {
+    font-size: 14px;
+    color: var(--text-primary);
+    line-height: 1.5;
+    padding: 8px 12px;
+    background: var(--surface-raised);
+    border-radius: 4px;
+    border-left: 2px solid transparent;
+}
+.log-user .log-text { border-left-color: var(--amber); }
+.log-ai .log-text   { border-left-color: var(--green); }
+
+.no-data-state {
+    text-align: center;
+    padding: 80px 40px;
+}
+.no-data-state h2 {
+    font-size: 1.3rem;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+}
+.no-data-state p {
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.7;
+    margin-bottom: 24px;
+}
+</style>
+</body>
+</html>

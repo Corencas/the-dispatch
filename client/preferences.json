@@ -1,0 +1,15 @@
+{
+  "personality": "professional",
+  "wake_word_enabled": false,
+  "wake_word_keyword": "porcupine",
+  "push_to_talk_key": "F9",
+  "preferred_cargo": [],
+  "avoided_cargo": [],
+  "preferred_min_distance": 0,
+  "preferred_max_distance": 9999,
+  "preferred_min_revenue": 0,
+  "target_weekly_earnings": 0,
+  "preferred_cities": [],
+  "avoided_cities": [],
+  "notes": ""
+}

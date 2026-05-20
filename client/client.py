@@ -16,6 +16,7 @@ import pystray
 from PIL import Image, ImageDraw
 from dispatcher import generate_and_play, build_dispatch_messages
 from telemetry import start_telemetry_loop
+import assistant
 
 load_dotenv()
 
@@ -160,6 +161,11 @@ def push_data(filepath):
 
         last_snapshot = data
 
+        # Feed parsed data to the assistant (includes freight_market from parse_sii)
+        assistant.state.update_snapshot(data, data.get('freight_market', []))
+        # Check if any proactive briefing triggers fired
+        assistant.check_proactive_triggers()
+
         response = requests.post(
             f'{SERVER_URL}/api/snapshot',
             json=data,
@@ -271,7 +277,7 @@ _SUCCESS_HTML = b'''<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>The Dispatch — Connected</title>
+  <title>The Dispatch &mdash; Connected</title>
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@400;600&display=swap" rel="stylesheet">
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
@@ -400,8 +406,9 @@ def main():
     print(f'[Dispatch] Starting as {DISCORD_USERNAME}')
     _set_status(f'Watching — {DISCORD_USERNAME}')
 
-    # Start telemetry and do an immediate push
+    # Start telemetry, assistant, and do an immediate push
     start_telemetry_loop()
+    assistant.start()
     threading.Thread(target=push_data, args=(filepath,), daemon=True).start()
 
     observer = start_watcher(filepath)

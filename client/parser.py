@@ -9,7 +9,7 @@ def parse_sii(filepath):
         'player': parse_player(content),
         'drivers': parse_drivers(content),
         'jobs': parse_jobs(content),
-        'freight_market': parse_freight_market(content),
+        'freight_market': [],
     }
 
     return result
@@ -159,19 +159,15 @@ def parse_freight_market(content):
     import logging
     _log = logging.getLogger('parser')
 
-    # Primary: match blocks whose TYPE is .job_offer / job_offer
-    # Format: "some.name : .job_offer {\n  fields\n}"
+    jobs = []
+
+    # ATS/ETS2 format: "economy.job_offer.N : .job_offer { ... }"
+    # The TYPE after the colon contains "job_offer" (with an optional dotted prefix).
+    # [^}]* stops at the first } so we never run across a sibling block's content.
     blocks = re.findall(
-        r'[^\n]+:\s*\.?job_offer\s*\{(.*?)(?:\r?\n)\}',
+        r'[^\n]+:\s*[\w.]*job_offer\s*\{([^}]*)\}',
         content, re.DOTALL
     )
-
-    # Fallback: some game versions or mods use inline syntax
-    if not blocks:
-        blocks = re.findall(
-            r'job_offer\s*:\s*\S+\s*\{([^}]+)\}',
-            content, re.DOTALL
-        )
 
     _log.info(f"freight market: {len(blocks)} raw job_offer blocks found in save")
     print(f'[Parser] Freight market: {len(blocks)} job_offer blocks found in save')

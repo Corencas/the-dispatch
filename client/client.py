@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from parser import parse_sii
+from parser import parse_sii, parse_freight_market
 from dotenv import load_dotenv
 import pystray
 from PIL import Image, ImageDraw
@@ -153,6 +153,9 @@ def push_data(filepath):
 
     try:
         data = parse_sii(decrypted)
+
+        with open(decrypted, 'r', encoding='utf-8') as _f:
+            data['freight_market'] = parse_freight_market(_f.read())
 
         messages = build_dispatch_messages(last_snapshot, data)
         for msg in messages:

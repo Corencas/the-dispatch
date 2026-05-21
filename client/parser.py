@@ -140,20 +140,15 @@ def parse_jobs(content):
 
 def parse_freight_market(content):
     """
-    Parse available freight market job offers from ATS/ETS2 save files.
+    Parse currently available freight market job offers from ATS/ETS2 save files.
 
-    The save file uses two block types:
-      company : company.volatile.COMPANY.CITY {
-          job_offer[0]: _nameless.xxx
-          ...
-      }
-      job_offer_data : _nameless.xxx {
-          target: "DEST_COMPANY.DEST_CITY"
-          shortest_distance_km: 369
-          cargo: cargo.TYPE
-          urgency: 0|1
-          expiration_time: 115504
-      }
+    Two-pass approach:
+      Pass 1 — build a map of {job_offer_data_id: (src_company, src_city, discovered)}
+               from company.volatile blocks.  Only discovered companies (ones the
+               player has visited) are included; undiscovered ones have pre-seeded
+               placeholder slots that are not meaningful for dispatch.
+      Pass 2 — parse each job_offer_data block, cross-reference game_time from the
+               economy block, and keep only offers whose expiration_time > game_time.
 
     Revenue is not stored in save files — estimated at ~$32/km (avg from profit logs,
     +20% for urgent jobs).
@@ -161,7 +156,14 @@ def parse_freight_market(content):
     import logging
     _log = logging.getLogger('parser')
 
-    # Pass 1: map each job_offer_data nameless ID -> (source_company, source_city)
+    # Extract current game time so we can filter out expired offers
+    game_time_m = re.search(r'\bgame_time:\s*(\d+)', content)
+    game_time = int(game_time_m.group(1)) if game_time_m else 0
+
+    # Pass 1: map job_offer_data ID -> (src_company, src_city)
+    # Only index offers from discovered companies — the game pre-fills offer slots for
+    # every company on the map (4 000+), but only ~1 000 have been visited by the player.
+    # Offers from undiscovered companies are not shown in the in-game freight market.
     source_map = {}
     company_pattern = re.compile(
         r'company\s*:\s*company\.volatile\.(\w+)\.(\w+)\s*\{([^}]*)\}',
@@ -171,16 +173,18 @@ def parse_freight_market(content):
 
     for m in company_pattern.finditer(content):
         company_name, city_name, block = m.group(1), m.group(2), m.group(3)
+        if 'discovered: true' not in block:
+            continue
         for offer_id in offer_ref_pattern.findall(block):
             source_map[offer_id] = (company_name, city_name)
 
-    print(f'[Parser] Freight market: {len(source_map)} job offer slots mapped from companies')
-    _log.info(f"freight market: {len(source_map)} company->job_offer mappings")
+    _log.info(f"freight market: {len(source_map)} offer slots from discovered companies (game_time={game_time})")
+    print(f'[Parser] Freight market: {len(source_map)} slots from discovered companies, game_time={game_time}')
 
     def _clean(s):
         return s.replace('_', ' ').title()
 
-    # Pass 2: parse each job_offer_data block
+    # Pass 2: parse job_offer_data blocks — keep only non-expired current offers
     job_data_pattern = re.compile(
         r'job_offer_data\s*:\s*(_nameless\.\S+)\s*\{([^}]*)\}',
         re.DOTALL
@@ -197,6 +201,7 @@ def parse_freight_market(content):
 
         src_company, src_city = src
 
+        # Must have a real destination
         target_m = re.search(r'target\s*:\s*"([^"]+)"', block)
         if not target_m:
             continue
@@ -210,9 +215,21 @@ def parse_freight_market(content):
         dest_company = target_raw[:dot_idx]
         dest_city = target_raw[dot_idx + 1:]
 
+        # Must have a positive distance
         dist_m = re.search(r'shortest_distance_km\s*:\s*(\d+)', block)
         dist = int(dist_m.group(1)) if dist_m else 0
         if dist <= 0:
+            continue
+
+        # Must not have expired — nil means unset (skip), numeric must be > game_time
+        expiry_m = re.search(r'expiration_time\s*:\s*(\S+)', block)
+        if not expiry_m:
+            continue
+        expiry_raw = expiry_m.group(1).strip()
+        if expiry_raw in ('nil', 'null', ''):
+            continue
+        expiry = int(expiry_raw)
+        if game_time > 0 and expiry <= game_time:
             continue
 
         cargo_m = re.search(r'\bcargo\s*:\s*(\S+)', block)
@@ -224,9 +241,6 @@ def parse_freight_market(content):
 
         urgency_m = re.search(r'\burgency\s*:\s*(\d+)', block)
         urgency = int(urgency_m.group(1)) if urgency_m else 0
-
-        expiry_m = re.search(r'expiration_time\s*:\s*(\d+)', block)
-        expiry = int(expiry_m.group(1)) if expiry_m else 0
 
         revenue = int(dist * 32 * (1.2 if urgency > 0 else 1.0))
 
@@ -242,8 +256,8 @@ def parse_freight_market(content):
             'expiration_time':     expiry,
         })
 
-    print(f'[Parser] Freight market: {len(jobs)} jobs parsed')
-    _log.info(f"freight market: {len(jobs)} valid jobs parsed")
+    print(f'[Parser] Freight market: {len(jobs)} current offers (from discovered companies, not expired)')
+    _log.info(f"freight market: {len(jobs)} current offers")
     jobs.sort(key=lambda j: j['revenue'], reverse=True)
     return jobs
 

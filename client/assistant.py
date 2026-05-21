@@ -139,10 +139,16 @@ def load_prefs() -> dict:
             try:
                 with open(PREFS_PATH, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                return {**DEFAULT_PREFS, **data}
+                prefs = {**DEFAULT_PREFS, **data}
             except Exception as e:
                 log.warning(f"Failed to load preferences: {e}")
-        return dict(DEFAULT_PREFS)
+                prefs = dict(DEFAULT_PREFS)
+        else:
+            prefs = dict(DEFAULT_PREFS)
+        # PTT_KEY in .env always overrides whatever is stored in preferences.json
+        if PTT_KEY_ENV:
+            prefs['push_to_talk_key'] = PTT_KEY_ENV
+        return prefs
 
 
 def save_prefs(prefs: dict):
@@ -778,6 +784,8 @@ def _ptt_loop():
         import ctypes
 
         vk_code = _resolve_vk(ptt_key)
+        log.info(f"PTT: _resolve_vk({ptt_key!r}) → {hex(vk_code) if vk_code is not None else None}")
+        print(f"[PTT] _resolve_vk({ptt_key!r}) = {hex(vk_code) if vk_code is not None else 'None'}", flush=True)
         if vk_code is None:
             log.error(f"PTT: cannot resolve VK code for {ptt_key!r} — falling back to keyboard library")
             print(f"[PTT] ERROR: no VK code for {ptt_key!r}", flush=True)

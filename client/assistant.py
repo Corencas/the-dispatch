@@ -758,67 +758,109 @@ def _ptt_loop():
 
     Falls back to the keyboard library on non-Windows platforms.
     """
-    import platform
+    # This line MUST appear first — if the thread crashes before it, we know
+    # the thread was never scheduled or hit a top-level import error.
+    log.info("PTT: _ptt_loop thread entered")
+    print("[PTT] _ptt_loop thread entered", flush=True)
 
-    ptt_key = load_prefs().get('push_to_talk_key', PTT_KEY_ENV)
-    log.info(f"PTT: key=[{ptt_key.upper()}] — hold to speak, release to send")
+    try:
+        import platform
 
-    if platform.system() != 'Windows':
-        _ptt_loop_keyboard_fallback(ptt_key)
-        return
+        ptt_key = load_prefs().get('push_to_talk_key', PTT_KEY_ENV)
+        log.info(f"PTT: configured key=[{ptt_key!r}] (upper={ptt_key.upper()})")
+        print(f"[PTT] key={ptt_key!r}  platform={platform.system()}", flush=True)
 
-    vk_code = _resolve_vk(ptt_key)
-    if vk_code is None:
-        log.error(f"PTT: cannot resolve VK code for {ptt_key!r} — falling back to keyboard library")
-        _ptt_loop_keyboard_fallback(ptt_key)
-        return
+        if platform.system() != 'Windows':
+            log.info("PTT: non-Windows — using keyboard library fallback")
+            _ptt_loop_keyboard_fallback(ptt_key)
+            return
 
-    import ctypes
-    user32 = ctypes.windll.user32
-    log.info(f"PTT: using GetAsyncKeyState polling at 50 Hz (VK=0x{vk_code:02X})")
+        import ctypes
 
-    recording = False
-    stop_event: threading.Event | None = None
-    record_thread: threading.Thread | None = None
-    wav_holder: list = [None]
+        vk_code = _resolve_vk(ptt_key)
+        if vk_code is None:
+            log.error(f"PTT: cannot resolve VK code for {ptt_key!r} — falling back to keyboard library")
+            print(f"[PTT] ERROR: no VK code for {ptt_key!r}", flush=True)
+            _ptt_loop_keyboard_fallback(ptt_key)
+            return
 
-    while True:
-        key_down = bool(user32.GetAsyncKeyState(vk_code) & 0x8000)
+        user32 = ctypes.windll.user32
+        # Explicitly declare return type as c_short (GetAsyncKeyState returns SHORT).
+        # Without this ctypes assumes c_int; bit-15 masking still works, but being
+        # explicit avoids any platform-specific sign-extension ambiguity.
+        user32.GetAsyncKeyState.restype = ctypes.c_short
 
-        if key_down and not recording:
-            recording = True
-            stop_event = threading.Event()
-            wav_holder = [None]
-            log.info("PTT: key down — recording...")
+        log.info(f"PTT: GetAsyncKeyState polling at 50 Hz — VK=0x{vk_code:02X} key={ptt_key!r}")
+        print(f"[PTT] polling VK=0x{vk_code:02X} ({ptt_key!r}) — hold key to record", flush=True)
 
-            def do_record(se=stop_event, wh=wav_holder):
-                wh[0] = record_audio(se)
+        # Sanity-check: scan all common VK codes once and report any already-pressed
+        pressed_now = [vk for vk in range(1, 256)
+                       if user32.GetAsyncKeyState(vk) & 0x8000]
+        if pressed_now:
+            log.info(f"PTT: keys currently held at startup: {[hex(v) for v in pressed_now]}")
+        else:
+            log.info("PTT: GetAsyncKeyState scan OK — no keys held at startup")
+        print(f"[PTT] startup key scan: {[hex(v) for v in pressed_now] or 'none held'}", flush=True)
 
-            record_thread = threading.Thread(target=do_record, daemon=True)
-            record_thread.start()
+        recording = False
+        stop_event: threading.Event | None = None
+        record_thread: threading.Thread | None = None
+        wav_holder: list = [None]
+        tick = 0
 
-        elif not key_down and recording:
-            recording = False
-            if stop_event:
-                stop_event.set()
-            if record_thread:
-                record_thread.join(timeout=3)
+        while True:
+            raw = user32.GetAsyncKeyState(vk_code)
+            key_down = bool(raw & 0x8000)
 
-            wav = wav_holder[0]
-            if wav:
-                try:
-                    size = os.path.getsize(wav)
-                    duration = size / (SAMPLE_RATE * 2)
-                    log.info(f"PTT: key up — wav={wav}, {size} bytes, ~{duration:.1f}s — launching pipeline")
-                except Exception:
-                    log.info(f"PTT: key up — wav={wav} (could not stat)")
-                threading.Thread(
-                    target=_process_voice_input, args=(wav,), daemon=True
-                ).start()
-            else:
-                log.warning("PTT: key up but wav=None — recording too short or mic error")
+            # Heartbeat every 5 s — confirms the loop is alive and shows key state
+            tick += 1
+            if tick % 250 == 0:  # 250 × 20 ms = 5 s
+                log.info(f"PTT: heartbeat — key={ptt_key!r} VK=0x{vk_code:02X} "
+                         f"raw=0x{raw & 0xFFFF:04X} recording={recording}")
+                print(f"[PTT] heartbeat key={ptt_key!r} raw=0x{raw & 0xFFFF:04X} "
+                      f"recording={recording}", flush=True)
 
-        time.sleep(0.02)  # 50 Hz — ~20 ms latency, negligible CPU
+            if key_down and not recording:
+                recording = True
+                stop_event = threading.Event()
+                wav_holder = [None]
+                log.info(f"PTT: key DOWN (VK=0x{vk_code:02X}) — recording...")
+                print(f"[PTT] KEY DOWN — recording", flush=True)
+
+                def do_record(se=stop_event, wh=wav_holder):
+                    wh[0] = record_audio(se)
+
+                record_thread = threading.Thread(target=do_record, daemon=True)
+                record_thread.start()
+
+            elif not key_down and recording:
+                recording = False
+                if stop_event:
+                    stop_event.set()
+                if record_thread:
+                    record_thread.join(timeout=3)
+
+                wav = wav_holder[0]
+                if wav:
+                    try:
+                        size = os.path.getsize(wav)
+                        duration = size / (SAMPLE_RATE * 2)
+                        log.info(f"PTT: key UP — {size} bytes, ~{duration:.1f}s — launching pipeline")
+                        print(f"[PTT] KEY UP — {duration:.1f}s recorded, sending to pipeline", flush=True)
+                    except Exception:
+                        log.info(f"PTT: key UP — wav={wav} (could not stat)")
+                    threading.Thread(
+                        target=_process_voice_input, args=(wav,), daemon=True
+                    ).start()
+                else:
+                    log.warning("PTT: key UP but wav=None — recording too short or mic error")
+                    print("[PTT] KEY UP — wav=None (too short or mic error)", flush=True)
+
+            time.sleep(0.02)  # 50 Hz — ~20 ms latency, negligible CPU
+
+    except Exception as e:
+        log.error(f"PTT: _ptt_loop crashed: {e}", exc_info=True)
+        print(f"[PTT] CRASHED: {e}", flush=True)
 
 
 def _ptt_loop_keyboard_fallback(ptt_key: str):
@@ -1090,11 +1132,27 @@ def _session_start_briefing():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _ptt_thread_watchdog(ptt_thread: threading.Thread):
+    """Periodically log whether the PTT listener thread is still alive."""
+    while True:
+        time.sleep(15)
+        alive = ptt_thread.is_alive()
+        log.info(f"PTT watchdog: ptt-listener thread alive={alive}")
+        print(f"[PTT] watchdog: thread alive={alive}", flush=True)
+        if not alive:
+            log.error("PTT: ptt-listener thread has DIED — PTT is non-functional")
+            print("[PTT] ERROR: listener thread died — PTT non-functional", flush=True)
+            break
+
+
 def start(voice_mode: str | None = None):
     """
     Start assistant background threads.
     Call from client.py main() after telemetry and watcher are running.
     """
+    log.info("assistant.start() called")
+    print("[Assistant] start() called", flush=True)
+
     if not OPENAI_API_KEY:
         log.warning("OPENAI_API_KEY not set — voice transcription will be unavailable")
     if not ANTHROPIC_API_KEY:
@@ -1110,5 +1168,9 @@ def start(voice_mode: str | None = None):
         threading.Thread(target=_wake_word_loop, daemon=True, name='ww-listener').start()
         log.info("Assistant started in WAKE_WORD mode")
     else:
-        threading.Thread(target=_ptt_loop, daemon=True, name='ptt-listener').start()
-        log.info(f"Assistant started in PUSH_TO_TALK mode [{prefs.get('push_to_talk_key', PTT_KEY_ENV)}]")
+        ptt_thread = threading.Thread(target=_ptt_loop, daemon=True, name='ptt-listener')
+        ptt_thread.start()
+        log.info(f"Assistant started in PUSH_TO_TALK mode — key={prefs.get('push_to_talk_key', PTT_KEY_ENV)!r} thread={ptt_thread.ident}")
+        print(f"[Assistant] PTT thread started: ident={ptt_thread.ident}", flush=True)
+        threading.Thread(target=_ptt_thread_watchdog, args=(ptt_thread,),
+                         daemon=True, name='ptt-watchdog').start()

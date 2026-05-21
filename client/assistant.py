@@ -428,18 +428,21 @@ def query_claude(user_message: str, prefs: dict,
     system = f"{SCOPE_GUARD}\n\n{persona['prompt']}\n\nCURRENT GAME STATE:\n{context}"
 
     try:
+        log.info(f"Claude: sending request (model=claude-sonnet-4-20250514, personality={personality})")
         resp = client.messages.create(
             model='claude-sonnet-4-20250514',
             max_tokens=300,
             system=system,
             messages=[{'role': 'user', 'content': user_message}],
         )
-        return resp.content[0].text.strip()
+        text = resp.content[0].text.strip()
+        log.info(f"Claude: received {len(text)} chars, stop_reason={resp.stop_reason}")
+        return text
     except anthropic.APIStatusError as e:
-        log.error(f"Claude API error {e.status_code}: {e.message}")
+        log.error(f"Claude: API error status={e.status_code}: {e.message}", exc_info=True)
         return _FALLBACK['api_error']
     except Exception as e:
-        log.error(f"Claude unexpected error: {e}")
+        log.error(f"Claude: unexpected error: {e}", exc_info=True)
         return _FALLBACK['api_error']
 
 
@@ -503,20 +506,32 @@ def speak(text: str, prefs: dict | None = None):
 
 
 def _speak_blocking(text: str, voice: str):
+    log.info(f"TTS: _speak_blocking waiting for lock (voice={voice}, chars={len(text)})")
     with _tts_lock:
-        asyncio.run(_speak_async(text, voice))
+        log.info("TTS: lock acquired, running async TTS")
+        try:
+            asyncio.run(_speak_async(text, voice))
+        except Exception as e:
+            log.error(f"TTS: asyncio.run raised: {e}", exc_info=True)
+    log.info("TTS: _speak_blocking done")
 
 
 async def _speak_async(text: str, voice: str):
     tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
     tmp.close()
     try:
+        log.info(f"TTS: calling edge_tts.Communicate (voice={voice}), saving to {tmp.name}")
         await edge_tts.Communicate(text, voice).save(tmp.name)
+        size = os.path.getsize(tmp.name)
+        log.info(f"TTS: edge_tts wrote {size} bytes — reading audio")
         data, sr = sf.read(tmp.name)
+        duration = len(data) / sr
+        log.info(f"TTS: playing {duration:.1f}s at {sr} Hz")
         sd.play(data, sr)
         sd.wait()
+        log.info("TTS: playback complete")
     except Exception as e:
-        log.error(f"TTS error: {e}")
+        log.error(f"TTS: _speak_async error: {e}", exc_info=True)
     finally:
         try:
             os.unlink(tmp.name)
@@ -543,10 +558,14 @@ def record_audio(stop_event: threading.Event, max_secs: int = MAX_RECORD_SECS) -
         return None
 
     if not chunks:
+        log.warning("record_audio: no audio chunks captured")
         return None
 
     audio = np.concatenate(chunks, axis=0)
-    if len(audio) / SAMPLE_RATE < MIN_RECORD_SECS:
+    duration = len(audio) / SAMPLE_RATE
+    log.info(f"record_audio: captured {duration:.2f}s of audio ({len(chunks)} chunks)")
+    if duration < MIN_RECORD_SECS:
+        log.warning(f"record_audio: too short ({duration:.2f}s < {MIN_RECORD_SECS}s minimum) — discarding")
         return None
 
     tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
@@ -581,9 +600,11 @@ def transcribe(wav_path: str) -> str | None:
     """Transcribe a WAV via OpenAI Whisper. Returns text or None."""
     client = _get_openai()
     if not client:
-        log.warning("OPENAI_API_KEY not set — transcription disabled")
+        log.warning("Whisper: OPENAI_API_KEY not set — transcription disabled")
         return None
     try:
+        size = os.path.getsize(wav_path) if os.path.exists(wav_path) else -1
+        log.info(f"Whisper: sending {wav_path} ({size} bytes) to whisper-1")
         with open(wav_path, 'rb') as f:
             result = client.audio.transcriptions.create(
                 model='whisper-1',
@@ -592,13 +613,13 @@ def transcribe(wav_path: str) -> str | None:
                 response_format='text',
             )
         text = (result.strip() if isinstance(result, str) else str(result).strip())
-        log.info(f"Transcribed: {text!r}")
+        log.info(f"Whisper: transcript={text!r}")
         return text or None
     except openai.APIError as e:
-        log.error(f"Whisper API error: {e}")
+        log.error(f"Whisper: API error status={e.status_code}: {e}", exc_info=True)
         return None
     except Exception as e:
-        log.error(f"Whisper unexpected error: {e}")
+        log.error(f"Whisper: unexpected error: {e}", exc_info=True)
         return None
 
 
@@ -610,33 +631,72 @@ def _process_voice_input(wav_path: str):
     Runs in its own thread so it never blocks the hotkey listener.
     """
     if not wav_path:
+        log.warning("Pipeline: wav_path is None/empty — nothing to process")
         return
 
     try:
-        text = transcribe(wav_path)
+        # ── Step 1: log audio file info ───────────────────────────────────────
+        try:
+            size = os.path.getsize(wav_path)
+            duration = size / (SAMPLE_RATE * 2)  # 16-bit mono = 2 bytes/sample
+            log.info(f"Pipeline: audio file {wav_path} — {size} bytes, ~{duration:.1f}s")
+        except Exception as e:
+            log.error(f"Pipeline: could not stat audio file: {e}", exc_info=True)
+
+        # ── Step 2: Whisper transcription ─────────────────────────────────────
+        log.info("Pipeline: calling transcribe()")
+        try:
+            text = transcribe(wav_path)
+        except Exception as e:
+            log.error(f"Pipeline: transcribe() raised: {e}", exc_info=True)
+            return
+        log.info(f"Pipeline: transcribe() returned {text!r}")
+
         if not text:
-            log.info("No speech detected in recording.")
+            log.info("Pipeline: empty transcript — aborting (no speech detected)")
             return
 
         prefs = load_prefs()
 
-        # Check for preference-update commands first — no Claude call needed
-        prefs, pref_msg = _parse_pref_command(text, prefs)
+        # ── Step 3: preference-update shortcut ────────────────────────────────
+        try:
+            prefs, pref_msg = _parse_pref_command(text, prefs)
+        except Exception as e:
+            log.error(f"Pipeline: _parse_pref_command raised: {e}", exc_info=True)
+            pref_msg = None
+
         if pref_msg:
-            log.info(f"Pref update: {pref_msg}")
+            log.info(f"Pipeline: pref update matched — {pref_msg!r}")
             speak(pref_msg, prefs)
             _append_history(text, pref_msg)
             return
 
-        # Query Claude
+        # ── Step 4: Claude ────────────────────────────────────────────────────
+        log.info(f"Pipeline: calling Claude with user text={text!r}")
         t0 = time.monotonic()
-        tel, snap, market, _, start_snap = state.read()
-        response = query_claude(text, prefs, tel, snap, market, start_snap)
-        log.info(f"Claude [{time.monotonic()-t0:.1f}s]: {response[:100]}")
+        try:
+            tel, snap, market, _, start_snap = state.read()
+            response = query_claude(text, prefs, tel, snap, market, start_snap)
+        except Exception as e:
+            log.error(f"Pipeline: query_claude() raised: {e}", exc_info=True)
+            return
+        elapsed = time.monotonic() - t0
+        log.info(f"Pipeline: Claude responded in {elapsed:.1f}s — {response!r}")
 
-        speak(response, prefs)
+        # ── Step 5: TTS ───────────────────────────────────────────────────────
+        log.info(f"Pipeline: launching TTS for {len(response)} chars")
+        try:
+            speak(response, prefs)
+        except Exception as e:
+            log.error(f"Pipeline: speak() raised: {e}", exc_info=True)
+            return
+        log.info("Pipeline: TTS thread launched")
+
         _append_history(text, response)
+        log.info("Pipeline: complete")
 
+    except Exception as e:
+        log.error(f"Pipeline: unhandled exception: {e}", exc_info=True)
     finally:
         try:
             os.unlink(wav_path)
@@ -696,9 +756,17 @@ def _ptt_loop():
                     t.join(timeout=3)
                 wav = holder[0]
                 if wav:
+                    try:
+                        size = os.path.getsize(wav)
+                        duration = size / (SAMPLE_RATE * 2)
+                        log.info(f"PTT: released — wav={wav}, {size} bytes, ~{duration:.1f}s — launching pipeline")
+                    except Exception:
+                        log.info(f"PTT: released — wav={wav} (could not stat)")
                     threading.Thread(
                         target=_process_voice_input, args=(wav,), daemon=True
                     ).start()
+                else:
+                    log.warning("PTT: released but wav=None — recording too short or mic error")
 
     keyboard.on_press(on_press)
     keyboard.on_release(on_release)

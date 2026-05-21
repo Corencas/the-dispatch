@@ -140,97 +140,110 @@ def parse_jobs(content):
 
 def parse_freight_market(content):
     """
-    Parse available job offers from the ATS/ETS2 save file.
-    Returns a list of dicts sorted by revenue descending.
+    Parse available freight market job offers from ATS/ETS2 save files.
 
-    ATS/ETS2 save format (post-SII_Decrypt):
-      economy.job_offer.N : .job_offer {
-          source_city: los_angeles
-          target_city: phoenix
-          cargo: cargo.flat_boards
-          revenue: 14500
-          distance: 372
+    The save file uses two block types:
+      company : company.volatile.COMPANY.CITY {
+          job_offer[0]: _nameless.xxx
           ...
       }
+      job_offer_data : _nameless.xxx {
+          target: "DEST_COMPANY.DEST_CITY"
+          shortest_distance_km: 369
+          cargo: cargo.TYPE
+          urgency: 0|1
+          expiration_time: 115504
+      }
 
-    The TYPE is `.job_offer` (after the colon), not the block name.
-    The legacy inline form `job_offer : token { ... }` is also attempted as a fallback.
+    Revenue is not stored in save files — estimated at ~$32/km (avg from profit logs,
+    +20% for urgent jobs).
     """
     import logging
     _log = logging.getLogger('parser')
 
-    jobs = []
+    # Pass 1: map each job_offer_data nameless ID -> (source_company, source_city)
+    source_map = {}
+    company_pattern = re.compile(
+        r'company\s*:\s*company\.volatile\.(\w+)\.(\w+)\s*\{([^}]*)\}',
+        re.DOTALL
+    )
+    offer_ref_pattern = re.compile(r'job_offer\[\d+\]\s*:\s*(_nameless\.\S+)')
 
-    # ATS/ETS2 format: "economy.job_offer.N : .job_offer { ... }"
-    # The TYPE after the colon contains "job_offer" (with an optional dotted prefix).
-    # [^}]* stops at the first } so we never run across a sibling block's content.
-    blocks = re.findall(
-        r'[^\n]+:\s*[\w.]*job_offer\s*\{([^}]*)\}',
-        content, re.DOTALL
+    for m in company_pattern.finditer(content):
+        company_name, city_name, block = m.group(1), m.group(2), m.group(3)
+        for offer_id in offer_ref_pattern.findall(block):
+            source_map[offer_id] = (company_name, city_name)
+
+    print(f'[Parser] Freight market: {len(source_map)} job offer slots mapped from companies')
+    _log.info(f"freight market: {len(source_map)} company->job_offer mappings")
+
+    def _clean(s):
+        return s.replace('_', ' ').title()
+
+    # Pass 2: parse each job_offer_data block
+    job_data_pattern = re.compile(
+        r'job_offer_data\s*:\s*(_nameless\.\S+)\s*\{([^}]*)\}',
+        re.DOTALL
     )
 
-    _log.info(f"freight market: {len(blocks)} raw job_offer blocks found in save")
-    print(f'[Parser] Freight market: {len(blocks)} job_offer blocks found in save')
+    jobs = []
+    for m in job_data_pattern.finditer(content):
+        offer_id = m.group(1)
+        block = m.group(2)
 
-    def _clean(s, is_city=False):
-        """Strip internal namespace prefixes and convert to Title Case."""
-        s = s.strip().strip('"')
-        # "company.weigh_station_ats.los_angeles" → "Los Angeles"
-        # "cargo.coil_steel" → "Coil Steel"
-        # "city.los_angeles" → "Los Angeles"
-        parts = s.split('.')
-        name = parts[-1]
-        return name.replace('_', ' ').title()
-
-    for block in blocks:
-        # City fields: ATS uses source_city / target_city;
-        # some versions use destination_city instead of target_city.
-        src_city_m = re.search(r'source_city\s*:\s*(\S+)', block)
-        tgt_city_m = re.search(r'(?:target_city|destination_city)\s*:\s*(\S+)', block)
-        src_co_m   = re.search(r'source_company\s*:\s*(\S+)', block)
-        tgt_co_m   = re.search(r'(?:target_company|destination_company)\s*:\s*(\S+)', block)
-        cargo_m    = re.search(r'\bcargo\s*:\s*(\S+)', block)
-        # ATS uses "distance" (km); some versions use "shortest_path_distance"
-        dist_m     = re.search(r'(?:\bdistance\b|shortest_path_distance)\s*:\s*(\d+)', block)
-        rev_m      = re.search(r'\brevenue\s*:\s*(\d+)', block)
-        mass_m     = re.search(r'cargo_mass\s*:\s*([\d.]+)', block)
-        urgency_m  = re.search(r'\burgency\s*:\s*(\d+)', block)
-        expiry_m   = re.search(r'expiration_time\s*:\s*(\d+)', block)
-
-        if not rev_m:
-            continue
-        rev = int(rev_m.group(1))
-        if rev <= 0:
+        src = source_map.get(offer_id)
+        if not src:
             continue
 
-        # City: prefer explicit city field, fall back to last dotted segment of company token
-        def _city_from_token(city_m, company_m):
-            if city_m:
-                return _clean(city_m.group(1))
-            if company_m:
-                # e.g. "company.carrier_station.los_angeles" → "Los Angeles"
-                return _clean(company_m.group(1))
-            return ''
+        src_company, src_city = src
 
-        src_city = _city_from_token(src_city_m, src_co_m)
-        tgt_city = _city_from_token(tgt_city_m, tgt_co_m)
-
-        if not src_city or not tgt_city:
+        target_m = re.search(r'target\s*:\s*"([^"]+)"', block)
+        if not target_m:
             continue
+        target_raw = target_m.group(1).strip()
+        if not target_raw or target_raw in ('null', 'nil'):
+            continue
+
+        dot_idx = target_raw.find('.')
+        if dot_idx < 0:
+            continue
+        dest_company = target_raw[:dot_idx]
+        dest_city = target_raw[dot_idx + 1:]
+
+        dist_m = re.search(r'shortest_distance_km\s*:\s*(\d+)', block)
+        dist = int(dist_m.group(1)) if dist_m else 0
+        if dist <= 0:
+            continue
+
+        cargo_m = re.search(r'\bcargo\s*:\s*(\S+)', block)
+        cargo_raw = cargo_m.group(1) if cargo_m else ''
+        if cargo_raw in ('null', 'nil', '""'):
+            cargo_raw = ''
+        else:
+            cargo_raw = re.sub(r'^cargo\.', '', cargo_raw)
+
+        urgency_m = re.search(r'\burgency\s*:\s*(\d+)', block)
+        urgency = int(urgency_m.group(1)) if urgency_m else 0
+
+        expiry_m = re.search(r'expiration_time\s*:\s*(\d+)', block)
+        expiry = int(expiry_m.group(1)) if expiry_m else 0
+
+        revenue = int(dist * 32 * (1.2 if urgency > 0 else 1.0))
 
         jobs.append({
-            'source_city':         src_city,
-            'destination_city':    tgt_city,
-            'source_company':      _clean(src_co_m.group(1)) if src_co_m else '',
-            'destination_company': _clean(tgt_co_m.group(1)) if tgt_co_m else '',
-            'cargo':               _clean(cargo_m.group(1)) if cargo_m else '',
-            'distance_km':         int(dist_m.group(1)) if dist_m else 0,
-            'revenue':             rev,
-            'cargo_mass_t':        float(mass_m.group(1)) if mass_m else 0.0,
-            'urgency':             int(urgency_m.group(1)) if urgency_m else 0,
-            'expiration_time':     int(expiry_m.group(1)) if expiry_m else 0,
+            'source_city':         _clean(src_city),
+            'destination_city':    _clean(dest_city),
+            'source_company':      _clean(src_company),
+            'destination_company': _clean(dest_company),
+            'cargo':               _clean(cargo_raw) if cargo_raw else '',
+            'distance_km':         dist,
+            'revenue':             revenue,
+            'urgency':             urgency,
+            'expiration_time':     expiry,
         })
 
+    print(f'[Parser] Freight market: {len(jobs)} jobs parsed')
+    _log.info(f"freight market: {len(jobs)} valid jobs parsed")
     jobs.sort(key=lambda j: j['revenue'], reverse=True)
     return jobs
 

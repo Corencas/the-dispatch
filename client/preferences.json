@@ -2,7 +2,7 @@
   "personality": "professional",
   "wake_word_enabled": false,
   "wake_word_keyword": "porcupine",
-  "push_to_talk_key": "F9",
+  "push_to_talk_key": "delete",
   "preferred_cargo": [],
   "avoided_cargo": [],
   "preferred_min_distance": 0,

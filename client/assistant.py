@@ -38,7 +38,7 @@ load_dotenv()
 OPENAI_API_KEY    = os.getenv('OPENAI_API_KEY', '')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 PICOVOICE_KEY     = os.getenv('PICOVOICE_ACCESS_KEY', '')
-PTT_KEY_ENV       = os.getenv('PTT_KEY', 'F9')
+PTT_KEY_ENV       = os.getenv('PTT_KEY', 'delete')
 VOICE_MODE        = os.getenv('VOICE_MODE', 'PUSH_TO_TALK')
 SERVER_URL        = os.getenv('SERVER_URL', 'http://127.0.0.1:5001')
 DISCORD_TOKEN     = os.getenv('DISCORD_TOKEN', '')
@@ -118,7 +118,7 @@ DEFAULT_PREFS = {
     'personality': 'professional',
     'wake_word_enabled': False,
     'wake_word_keyword': 'porcupine',
-    'push_to_talk_key': PTT_KEY_ENV,
+    'push_to_talk_key': 'delete',
     'preferred_cargo': [],
     'avoided_cargo': [],
     'preferred_min_distance': 0,
@@ -706,22 +706,134 @@ def _process_voice_input(wav_path: str):
 
 # ── Push-to-talk ─────────────────────────────────────────────────────────────
 
+# Windows Virtual Key codes for common PTT keys.
+# GetAsyncKeyState reads raw hardware state and works even when a game
+# (ATS, ETS2) holds exclusive keyboard focus — unlike the keyboard library's
+# hook callbacks which stop firing for the foreground game process.
+_VK_MAP: dict[str, int] = {
+    'delete': 0x2E, 'del': 0x2E,
+    'insert': 0x2D, 'ins': 0x2D,
+    'home': 0x24, 'end': 0x23,
+    'page up': 0x21, 'pageup': 0x21, 'page down': 0x22, 'pagedown': 0x22,
+    'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
+    'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
+    'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+    'num lock': 0x90, 'scroll lock': 0x91, 'caps lock': 0x14,
+    'left ctrl': 0xA2, 'right ctrl': 0xA3,
+    'left alt': 0xA4, 'right alt': 0xA5,
+    'left shift': 0xA0, 'right shift': 0xA1,
+    'pause': 0x13,
+    'num0': 0x60, 'num1': 0x61, 'num2': 0x62, 'num3': 0x63,
+    'num4': 0x64, 'num5': 0x65, 'num6': 0x66, 'num7': 0x67,
+    'num8': 0x68, 'num9': 0x69, 'num*': 0x6A, 'num+': 0x6B,
+    'num-': 0x6D, 'num.': 0x6E, 'num/': 0x6F,
+}
+
+
+def _resolve_vk(key_name: str) -> int | None:
+    """Resolve a key name string to a Windows Virtual Key code."""
+    low = key_name.lower().strip()
+    if low in _VK_MAP:
+        return _VK_MAP[low]
+    # Single printable character — ask Windows
+    if len(low) == 1:
+        try:
+            import ctypes
+            vk = ctypes.windll.user32.VkKeyScanA(ord(low)) & 0xFF
+            return vk if vk not in (0, 0xFF) else None
+        except Exception:
+            return None
+    return None
+
+
 def _ptt_loop():
     """
-    Listen for PTT hotkey hold/release via the keyboard library.
-    Records while the key is held; processes on release.
+    Push-to-talk loop using Win32 GetAsyncKeyState polling (50 Hz).
 
-    Note: the keyboard library requires elevated privileges on some Linux setups;
-    on Windows it works without elevation.
+    GetAsyncKeyState reads the raw hardware key state directly from the kernel
+    and returns the correct value regardless of which window has focus.  The
+    keyboard library's hook-based approach stops receiving key-release events
+    when a full-screen game (ATS/ETS2) captures exclusive input, causing the
+    recording to run until the 30-second MAX_RECORD_SECS timeout.
+
+    Falls back to the keyboard library on non-Windows platforms.
+    """
+    import platform
+
+    ptt_key = load_prefs().get('push_to_talk_key', PTT_KEY_ENV)
+    log.info(f"PTT: key=[{ptt_key.upper()}] — hold to speak, release to send")
+
+    if platform.system() != 'Windows':
+        _ptt_loop_keyboard_fallback(ptt_key)
+        return
+
+    vk_code = _resolve_vk(ptt_key)
+    if vk_code is None:
+        log.error(f"PTT: cannot resolve VK code for {ptt_key!r} — falling back to keyboard library")
+        _ptt_loop_keyboard_fallback(ptt_key)
+        return
+
+    import ctypes
+    user32 = ctypes.windll.user32
+    log.info(f"PTT: using GetAsyncKeyState polling at 50 Hz (VK=0x{vk_code:02X})")
+
+    recording = False
+    stop_event: threading.Event | None = None
+    record_thread: threading.Thread | None = None
+    wav_holder: list = [None]
+
+    while True:
+        key_down = bool(user32.GetAsyncKeyState(vk_code) & 0x8000)
+
+        if key_down and not recording:
+            recording = True
+            stop_event = threading.Event()
+            wav_holder = [None]
+            log.info("PTT: key down — recording...")
+
+            def do_record(se=stop_event, wh=wav_holder):
+                wh[0] = record_audio(se)
+
+            record_thread = threading.Thread(target=do_record, daemon=True)
+            record_thread.start()
+
+        elif not key_down and recording:
+            recording = False
+            if stop_event:
+                stop_event.set()
+            if record_thread:
+                record_thread.join(timeout=3)
+
+            wav = wav_holder[0]
+            if wav:
+                try:
+                    size = os.path.getsize(wav)
+                    duration = size / (SAMPLE_RATE * 2)
+                    log.info(f"PTT: key up — wav={wav}, {size} bytes, ~{duration:.1f}s — launching pipeline")
+                except Exception:
+                    log.info(f"PTT: key up — wav={wav} (could not stat)")
+                threading.Thread(
+                    target=_process_voice_input, args=(wav,), daemon=True
+                ).start()
+            else:
+                log.warning("PTT: key up but wav=None — recording too short or mic error")
+
+        time.sleep(0.02)  # 50 Hz — ~20 ms latency, negligible CPU
+
+
+def _ptt_loop_keyboard_fallback(ptt_key: str):
+    """
+    Hook-based fallback using the keyboard library (non-Windows or unresolvable VK).
+    Works fine when the Python window has focus; may miss key-release events
+    when a full-screen game holds exclusive input.
     """
     try:
         import keyboard
     except ImportError:
-        log.error("'keyboard' package not installed. Install it: pip install keyboard")
+        log.error("'keyboard' package not installed — PTT unavailable on this platform")
         return
 
-    ptt_key = load_prefs().get('push_to_talk_key', PTT_KEY_ENV)
-    log.info(f"Push-to-talk ready on [{ptt_key.upper()}] — hold to speak, release to send")
+    log.info(f"PTT: keyboard-library fallback mode (key={ptt_key!r})")
 
     recording = False
     stop_event: threading.Event | None = None
@@ -731,16 +843,14 @@ def _ptt_loop():
         if event.name.lower() == ptt_key.lower() and not recording:
             recording = True
             stop_event = threading.Event()
-            log.info("PTT: recording...")
-            # Record in a thread so we don't block the keyboard hook
             wav_holder = [None]
+            log.info("PTT: recording...")
 
             def do_record():
                 wav_holder[0] = record_audio(stop_event)
 
             t = threading.Thread(target=do_record, daemon=True)
             t.start()
-            # Store thread reference on stop_event so on_release can join if needed
             stop_event._record_thread = t
             stop_event._wav_holder = wav_holder
 
@@ -759,9 +869,9 @@ def _ptt_loop():
                     try:
                         size = os.path.getsize(wav)
                         duration = size / (SAMPLE_RATE * 2)
-                        log.info(f"PTT: released — wav={wav}, {size} bytes, ~{duration:.1f}s — launching pipeline")
+                        log.info(f"PTT: released — wav={wav}, {size} bytes, ~{duration:.1f}s")
                     except Exception:
-                        log.info(f"PTT: released — wav={wav} (could not stat)")
+                        log.info(f"PTT: released — wav={wav}")
                     threading.Thread(
                         target=_process_voice_input, args=(wav,), daemon=True
                     ).start()
@@ -770,7 +880,7 @@ def _ptt_loop():
 
     keyboard.on_press(on_press)
     keyboard.on_release(on_release)
-    keyboard.wait()  # blocks this thread forever; daemon so it exits with main
+    keyboard.wait()
 
 
 # ── Wake word ─────────────────────────────────────────────────────────────────

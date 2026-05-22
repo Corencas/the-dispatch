@@ -397,10 +397,20 @@ def build_context_summary(snapshot: dict) -> str:
     else:
         ctx["current_job"] = None
 
-    offers = snapshot.get("freight_market", {}).get("offers", [])
-    if not offers:
-        offers = snapshot.get("job_offers", [])
-    top_jobs = sorted(offers, key=lambda x: x.get("income", 0), reverse=True)[:10]
+    # freight_market is a list directly in this game's save format
+    offers = snapshot.get("freight_market", [])
+    if isinstance(offers, dict):
+        offers = offers.get("offers", [])
+    if not isinstance(offers, list):
+        offers = []
+
+    jobs = snapshot.get("jobs", [])
+    if not isinstance(jobs, list):
+        jobs = []
+
+    # Use whichever source has more entries
+    candidates = offers if len(offers) >= len(jobs) else jobs
+    top_jobs = sorted(candidates, key=lambda x: x.get("income", 0), reverse=True)[:10]
     ctx["top_freight_jobs"] = [
         {
             "cargo": j.get("cargo", "unknown"),

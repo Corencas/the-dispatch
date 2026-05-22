@@ -37,47 +37,47 @@ def _set_status(text):
 # ── Save file discovery ───────────────────────────────────────────
 
 def find_save_file():
+    """
+    Return the path to the most recently written game.sii across all save
+    slots for ATS and ETS2.  Autosave slots (name starts with 'autosave')
+    are updated every few minutes during active play; manual saves are only
+    written when the player uses the in-game save menu.  Sorting purely by
+    mtime means the freshest file always wins regardless of slot type.
+    """
     candidates = []
 
-    # ATS
     steam_userdata = os.path.expandvars(r'%PROGRAMFILES(X86)%\Steam\userdata')
-    if os.path.exists(steam_userdata):
+    for appid, label in [('270880', 'ATS'), ('227300', 'ETS2')]:
+        if not os.path.exists(steam_userdata):
+            continue
         for user_id in os.listdir(steam_userdata):
-            ats_path = os.path.join(steam_userdata, user_id, '270880', 'remote', 'profiles')
-            if os.path.exists(ats_path):
-                for profile in sorted(os.listdir(ats_path),
-                        key=lambda p: os.path.getmtime(os.path.join(ats_path, p)), reverse=True):
-                    save_dir = os.path.join(ats_path, profile, 'save')
-                    if os.path.exists(save_dir):
-                        for save in sorted(os.listdir(save_dir),
-                                key=lambda s: os.path.getmtime(os.path.join(save_dir, s)), reverse=True):
-                            candidate = os.path.join(save_dir, save, 'game.sii')
-                            if os.path.exists(candidate):
-                                candidates.append(('ATS', candidate))
+            prof_root = os.path.join(steam_userdata, user_id, appid, 'remote', 'profiles')
+            if not os.path.exists(prof_root):
+                continue
+            for profile in os.listdir(prof_root):
+                save_dir = os.path.join(prof_root, profile, 'save')
+                if not os.path.exists(save_dir):
+                    continue
+                for slot in os.listdir(save_dir):
+                    candidate = os.path.join(save_dir, slot, 'game.sii')
+                    if os.path.exists(candidate):
+                        candidates.append((label, candidate))
 
-    # ETS2 (appid 227300)
-    if os.path.exists(steam_userdata):
-        for user_id in os.listdir(steam_userdata):
-            ets_path = os.path.join(steam_userdata, user_id, '227300', 'remote', 'profiles')
-            if os.path.exists(ets_path):
-                for profile in sorted(os.listdir(ets_path),
-                        key=lambda p: os.path.getmtime(os.path.join(ets_path, p)), reverse=True):
-                    save_dir = os.path.join(ets_path, profile, 'save')
-                    if os.path.exists(save_dir):
-                        for save in sorted(os.listdir(save_dir),
-                                key=lambda s: os.path.getmtime(os.path.join(save_dir, s)), reverse=True):
-                            candidate = os.path.join(save_dir, save, 'game.sii')
-                            if os.path.exists(candidate):
-                                candidates.append(('ETS2', candidate))
+    if not candidates:
+        return None
 
-    if candidates:
-        # Prefer most recently modified
-        candidates.sort(key=lambda x: os.path.getmtime(x[1]), reverse=True)
-        game, path = candidates[0]
-        print(f'[Dispatch] Found {game} save: {path}')
-        return path
+    # Always pick the most recently written file — autosaves beat manual saves
+    # automatically because they are written more frequently.
+    candidates.sort(key=lambda x: os.path.getmtime(x[1]), reverse=True)
+    label, path = candidates[0]
+    slot_name = os.path.basename(os.path.dirname(path))
+    print(f'[Dispatch] Freshest {label} save: slot={slot_name!r}  path={path}')
+    return path
 
-    return None
+
+def _save_root_dir(save_path: str) -> str:
+    """Given .../save/SLOT/game.sii return .../save/ (the directory to watch)."""
+    return os.path.dirname(os.path.dirname(save_path))
 
 
 # ── SCS telemetry plugin auto-install ─────────────────────────────
@@ -200,26 +200,36 @@ def push_data(filepath):
 # ── File watcher ──────────────────────────────────────────────────
 
 class SaveWatcher(FileSystemEventHandler):
-    def __init__(self, filepath):
-        self.filepath = filepath
+    """
+    Watch the entire save/ directory tree recursively.  When any game.sii
+    changes (autosave, autosave_drive_N, autosave_job_N, manual slots…),
+    re-discover the freshest file via find_save_file() and push that.
+    This ensures the assistant always sees the most current game state
+    regardless of which slot ATS chose to write.
+    """
+    def __init__(self):
         self.last_push = 0
 
     def on_modified(self, event):
-        if event.src_path.endswith('game.sii'):
+        if not event.is_directory and event.src_path.endswith('game.sii'):
             now = time.time()
             if now - self.last_push > 30:
                 self.last_push = now
-                print('[Dispatch] Save detected, syncing...')
-                push_data(self.filepath)
+                freshest = find_save_file()
+                if freshest:
+                    slot = os.path.basename(os.path.dirname(freshest))
+                    print(f'[Dispatch] Save change detected — using freshest slot={slot!r}')
+                    push_data(freshest)
 
 
-def start_watcher(filepath):
-    event_handler = SaveWatcher(filepath)
+def start_watcher(save_root: str):
+    """Watch save_root (the .../save/ directory) recursively for any game.sii writes."""
+    event_handler = SaveWatcher()
     observer = Observer()
-    observer.schedule(event_handler, path=os.path.dirname(filepath), recursive=False)
+    observer.schedule(event_handler, path=save_root, recursive=True)
     observer.start()
-    _status['watching'] = os.path.dirname(filepath)
-    print(f'[Dispatch] Watching {filepath}')
+    _status['watching'] = save_root
+    print(f'[Dispatch] Watching save directory: {save_root}')
     return observer
 
 
@@ -386,11 +396,13 @@ def main():
     # Auto-install SCS telemetry plugin
     install_telemetry_plugin()
 
-    filepath = SAVE_PATH or find_save_file()
+    # Always use find_save_file() so autosaves are preferred over stale manual slots.
+    # SAVE_PATH in .env is ignored — it was previously pointing to a manual save (slot 2)
+    # which hadn't been written since the last time the player used the in-game save menu.
+    filepath = find_save_file()
     if not filepath:
         _set_status('Save file not found')
         print('[Dispatch] Could not find ATS/ETS2 save file.')
-        print('[Dispatch] Set SAVE_PATH= in client/.env to point at your game.sii')
         try:
             import tkinter as tk
             from tkinter import messagebox
@@ -399,22 +411,24 @@ def main():
             messagebox.showerror(
                 'The Dispatch',
                 'Could not find your ATS or ETS2 save file.\n\n'
-                'Set SAVE_PATH in client/.env and restart.'
+                'Make sure ATS or ETS2 has been run at least once.'
             )
             root.destroy()
         except Exception:
             pass
         return
 
+    save_root = _save_root_dir(filepath)
+
     print(f'[Dispatch] Starting as {DISCORD_USERNAME}')
     _set_status(f'Watching — {DISCORD_USERNAME}')
 
-    # Start telemetry, assistant, and do an immediate push
+    # Start telemetry, assistant, and do an immediate push of the freshest save
     start_telemetry_loop()
     assistant.start()
     threading.Thread(target=push_data, args=(filepath,), daemon=True).start()
 
-    observer = start_watcher(filepath)
+    observer = start_watcher(save_root)
     observer_ref = {'obs': observer}
 
     icon = pystray.Icon(

@@ -61,15 +61,12 @@ PERSONALITIES = {
 }
 
 SYSTEM_PROMPT = (
-    "You are a gruff truck dispatcher on CB radio. Be direct and use trucker lingo naturally "
-    "(what's your 20, hammer down, bear, copy that, 10-4, etc). Never say \"certainly\", "
-    "\"I'd be happy\", or any filler. No fluff, no sign-offs, no \"let me know if you need "
-    "anything\".\n\n"
-    "For simple yes/no or status questions: 1 sentence.\n"
-    "For job listings: list each job on its own line — cargo, destination, pay. No extra "
-    "commentary before or after.\n"
-    "For route or advice questions: 2-3 sentences max.\n\n"
-    "Never pad. If you said it, stop talking."
+    "You are a gruff CB radio dispatcher. Rules:\n"
+    "- Simple questions: 1 sentence\n"
+    "- Job listings: list each as \"Cargo → Destination: $income (Xkm)\" — max 5 jobs, no other text\n"
+    "- Never say \"certainly\", \"I'd be happy\", \"let me know\", or any filler\n"
+    "- End when the information is delivered. Period.\n"
+    "Trucker lingo: 10-4, what's your 20, hammer down, bear, etc — use sparingly and naturally."
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -383,7 +380,16 @@ def build_context_summary(snapshot: dict) -> str:
 
     ctx: dict = {}
     ctx["money"] = snapshot.get("finances", {}).get("money", "unknown")
-    ctx["current_city"] = snapshot.get("current_city", "unknown")
+
+    player = snapshot.get("player", {})
+    log.info(f"build_context_summary: player keys={list(player.keys()) if isinstance(player, dict) else player!r}")
+    # Try common field names for the player's current city
+    ctx["current_city"] = (
+        player.get("city")
+        or player.get("current_city")
+        or player.get("city_name")
+        or snapshot.get("current_city", "unknown")
+    )
 
     job = snapshot.get("current_job", {})
     if job:
@@ -482,8 +488,8 @@ def query_claude(user_message: str, prefs: dict,
         log.info(f"Claude: sending request (model=claude-sonnet-4-5, personality={personality}, "
                  f"history_msgs={len(recent)})")
         resp = client.messages.create(
-            model='claude-sonnet-4-5',
-            max_tokens=250,
+            model='claude-sonnet-4-6',
+            max_tokens=200,
             system=SYSTEM_PROMPT,
             messages=messages_payload,
         )

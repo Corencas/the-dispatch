@@ -376,10 +376,57 @@ def build_context(telemetry: dict, snapshot: dict, freight_market: list,
     return '\n'.join(lines)
 
 
+# ── Snapshot summariser ───────────────────────────────────────────────────────
+
+def build_context_summary(snapshot: dict) -> str:
+    if not snapshot:
+        return "No game data loaded."
+
+    ctx: dict = {}
+    ctx["money"] = snapshot.get("finances", {}).get("money", "unknown")
+    ctx["current_city"] = snapshot.get("current_city", "unknown")
+
+    job = snapshot.get("current_job", {})
+    if job:
+        ctx["current_job"] = {
+            "cargo": job.get("cargo", "none"),
+            "destination": job.get("destination_city", "unknown"),
+            "income": job.get("income", 0),
+            "distance_remaining": job.get("distance_remaining", "unknown"),
+        }
+    else:
+        ctx["current_job"] = None
+
+    offers = snapshot.get("freight_market", {}).get("offers", [])
+    if not offers:
+        offers = snapshot.get("job_offers", [])
+    top_jobs = sorted(offers, key=lambda x: x.get("income", 0), reverse=True)[:10]
+    ctx["top_freight_jobs"] = [
+        {
+            "cargo": j.get("cargo", "unknown"),
+            "source": j.get("source_city", "?"),
+            "destination": j.get("destination_city", "?"),
+            "income": j.get("income", 0),
+            "distance": j.get("distance", "?"),
+        }
+        for j in top_jobs
+    ]
+
+    ctx["drivers"] = [
+        {"name": d.get("name"), "city": d.get("city"), "status": d.get("status")}
+        for d in snapshot.get("drivers", [])[:5]
+    ]
+
+    return json.dumps(ctx, indent=2)
+
+
 # ── Claude API ────────────────────────────────────────────────────────────────
 
 _anthropic_client: anthropic.Anthropic | None = None
 _anthropic_lock = threading.Lock()
+
+_conv_history: list[dict] = []   # in-memory multi-turn history, capped at 6 messages
+_conv_lock = threading.Lock()
 
 
 def _get_anthropic() -> anthropic.Anthropic | None:
@@ -399,6 +446,8 @@ _FALLBACK = {
 def query_claude(user_message: str, prefs: dict,
                  telemetry: dict, snapshot: dict,
                  freight_market: list, session_start_snap: dict) -> str:
+    global _conv_history
+
     client = _get_anthropic()
     if not client:
         log.warning("ANTHROPIC_API_KEY not set")
@@ -406,27 +455,23 @@ def query_claude(user_message: str, prefs: dict,
 
     personality = prefs.get('personality', 'professional')
 
-    # ── Snapshot diagnostics ──────────────────────────────────────────────────
-    snap_keys = list(snapshot.keys()) if snapshot else []
-    log.info(f"Claude: snapshot keys={snap_keys}, "
-             f"jobs={len(snapshot.get('jobs', []))}, "
-             f"freight_market={len(snapshot.get('freight_market', []))}")
+    # ── Compact snapshot summary (replaces raw JSON dump) ─────────────────────
+    summary = build_context_summary(snapshot)
+    full_message = f"Current game data:\n{summary}\n\n{user_message}"
 
-    if snapshot:
-        data_block = json.dumps(snapshot, indent=2)
-        full_message = f"Current game data:\n{data_block}\n\n{user_message}"
-    else:
-        full_message = f"No save data loaded yet.\n\n{user_message}"
-
-    # ── Log what we're sending ────────────────────────────────────────────────
+    est_tokens = len(full_message) // 4
     log.info(f"Claude: user_message={user_message!r}")
-    log.info(f"Claude: full_message total length={len(full_message)} chars")
-    messages_payload = [{'role': 'user', 'content': full_message}]
-    log.info(f"Claude: messages array (first 500 chars of content)="
-             f"{full_message[:500]!r}")
+    log.info(f"Claude: full_message ~{est_tokens} tokens ({len(full_message)} chars)")
+
+    # ── Build messages array with capped history ──────────────────────────────
+    with _conv_lock:
+        recent = list(_conv_history[-6:])   # last 6 messages (3 turns)
+
+    messages_payload = recent + [{'role': 'user', 'content': full_message}]
 
     try:
-        log.info(f"Claude: sending request (model=claude-sonnet-4-5, personality={personality})")
+        log.info(f"Claude: sending request (model=claude-sonnet-4-5, personality={personality}, "
+                 f"history_msgs={len(recent)})")
         resp = client.messages.create(
             model='claude-sonnet-4-5',
             max_tokens=300,
@@ -436,6 +481,13 @@ def query_claude(user_message: str, prefs: dict,
         log.info(f"Claude: raw response content={resp.content!r}")
         text = resp.content[0].text.strip()
         log.info(f"Claude: received {len(text)} chars, stop_reason={resp.stop_reason}")
+
+        # Persist this turn to in-memory history
+        with _conv_lock:
+            _conv_history.append({'role': 'user', 'content': full_message})
+            _conv_history.append({'role': 'assistant', 'content': text})
+            _conv_history = _conv_history[-6:]   # keep at most 6 messages
+
         return text
     except anthropic.APIStatusError as e:
         log.error(f"Claude: APIStatusError status={e.status_code} message={e.message!r}",

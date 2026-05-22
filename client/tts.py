@@ -6,6 +6,7 @@ Falls back to edge-tts automatically if ELEVENLABS_API_KEY is missing.
 """
 
 import os
+import tempfile
 import threading
 from dotenv import load_dotenv
 
@@ -15,9 +16,9 @@ ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY', '')
 DISPATCHER_VOICE   = os.getenv('DISPATCHER_VOICE', 'gruff')
 
 VOICE_PROFILES = {
-    'gruff':   '29vD33N1CtxCmqQRPOHJ',  # Drew — deep, masculine
-    'radio':   'VR6AewLTigWG4xSOukaG',  # Arnold — gravelly
-    'southern': 'pNInz6obpgDQGcFmaJgB', # Adam — warm baritone
+    'gruff':    '29vD33N1CtxCmqQRPOHJ',  # Drew — deep, masculine
+    'radio':    'VR6AewLTigWG4xSOukaG',  # Arnold — gravelly
+    'southern': 'pNInz6obpgDQGcFmaJgB',  # Adam — warm baritone
 }
 
 _el_client = None
@@ -28,7 +29,7 @@ def _get_el_client():
     global _el_client
     with _el_lock:
         if _el_client is None and ELEVENLABS_API_KEY:
-            from elevenlabs.client import ElevenLabs
+            from elevenlabs import ElevenLabs
             _el_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
         return _el_client
 
@@ -44,21 +45,37 @@ def speak_elevenlabs(text: str, voice_id: str | None = None):
     client = _get_el_client()
     if client:
         try:
-            from elevenlabs import play
-            audio = client.text_to_speech.convert(
+            audio_generator = client.text_to_speech.convert(
                 voice_id=voice_id,
                 text=text,
                 model_id="eleven_turbo_v2",
                 output_format="mp3_44100_128",
             )
-            play(audio)
+            audio_bytes = b"".join(audio_generator)
+
+            tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+            tmp.write(audio_bytes)
+            tmp.close()
+
+            try:
+                import pygame
+                pygame.mixer.init()
+                pygame.mixer.music.load(tmp.name)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    pygame.time.Clock().tick(10)
+                pygame.mixer.quit()
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
             return
         except Exception as e:
             print(f'[TTS] ElevenLabs error: {e} — falling back to edge-tts', flush=True)
 
     # ── edge-tts fallback ─────────────────────────────────────────────────────
     import asyncio
-    import tempfile
     import edge_tts
     import sounddevice as sd
     import soundfile as sf

@@ -2,6 +2,7 @@ anthropic
 openai
 edge-tts
 elevenlabs
+pygame-ce
 sounddevice
 soundfile
 numpy

@@ -1,37 +1,10 @@
-import asyncio
-import edge_tts
-import sounddevice as sd
-import soundfile as sf
-import tempfile
-import os
 import threading
+from tts import speak_elevenlabs
 
-VOICE = "en-US-GuyNeural"  # professional male voice, sounds like a dispatcher
 
 def generate_and_play(message: str):
-    """Generate TTS audio and play it through speakers."""
-    thread = threading.Thread(target=_run_dispatch, args=(message,), daemon=True)
-    thread.start()
-
-def _run_dispatch(message: str):
-    asyncio.run(_speak(message))
-
-async def _speak(message: str):
-    tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
-    tmp.close()
-
-    try:
-        communicate = edge_tts.Communicate(message, VOICE)
-        await communicate.save(tmp.name)
-
-        data, samplerate = sf.read(tmp.name)
-        sd.play(data, samplerate)
-        sd.wait()
-    except Exception as e:
-        print(f'[Dispatch] Voice error: {e}')
-    finally:
-        if os.path.exists(tmp.name):
-            os.unlink(tmp.name)
+    """Speak a dispatch message via ElevenLabs (non-blocking)."""
+    threading.Thread(target=speak_elevenlabs, args=(message,), daemon=True).start()
 
 def build_dispatch_messages(old_snapshot: dict, new_snapshot: dict) -> list:
     """Compare two snapshots and generate dispatch messages for what changed."""

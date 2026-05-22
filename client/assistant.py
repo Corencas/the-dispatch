@@ -3,7 +3,7 @@ assistant.py — AI voice dispatch co-pilot for The Dispatch.
 
 Runs as daemon threads alongside the existing save watcher and telemetry reader.
 Listens for voice input (push-to-talk or wake word), transcribes via OpenAI Whisper,
-reasons via Claude claude-sonnet-4-5, and responds via edge-tts.
+reasons via Claude claude-sonnet-4-5, and responds via ElevenLabs TTS.
 
 Thread model:
   - main thread: pystray (untouched)
@@ -12,7 +12,6 @@ Thread model:
   - AssistantState: shared state, protected by threading.Lock
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -24,12 +23,12 @@ from datetime import datetime
 from pathlib import Path
 
 import anthropic
-import edge_tts
 import numpy as np
 import openai
 import sounddevice as sd
 import soundfile as sf
 from dotenv import load_dotenv
+from tts import speak_elevenlabs
 
 load_dotenv()
 
@@ -484,45 +483,18 @@ _tts_lock = threading.Lock()  # serialize audio output; avoids overlapping speec
 
 def speak(text: str, prefs: dict | None = None):
     """Play TTS in a non-blocking daemon thread."""
-    if prefs is None:
-        prefs = load_prefs()
-    personality = prefs.get('personality', 'professional')
-    voice = PERSONALITIES.get(personality, PERSONALITIES['professional'])['voice']
-    threading.Thread(target=_speak_blocking, args=(text, voice), daemon=True).start()
+    threading.Thread(target=_speak_blocking, args=(text,), daemon=True).start()
 
 
-def _speak_blocking(text: str, voice: str):
-    log.info(f"TTS: _speak_blocking waiting for lock (voice={voice}, chars={len(text)})")
+def _speak_blocking(text: str):
+    log.info(f"TTS: waiting for lock (chars={len(text)})")
     with _tts_lock:
-        log.info("TTS: lock acquired, running async TTS")
+        log.info("TTS: lock acquired, calling ElevenLabs")
         try:
-            asyncio.run(_speak_async(text, voice))
+            speak_elevenlabs(text)
         except Exception as e:
-            log.error(f"TTS: asyncio.run raised: {e}", exc_info=True)
-    log.info("TTS: _speak_blocking done")
-
-
-async def _speak_async(text: str, voice: str):
-    tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
-    tmp.close()
-    try:
-        log.info(f"TTS: calling edge_tts.Communicate (voice={voice}), saving to {tmp.name}")
-        await edge_tts.Communicate(text, voice).save(tmp.name)
-        size = os.path.getsize(tmp.name)
-        log.info(f"TTS: edge_tts wrote {size} bytes — reading audio")
-        data, sr = sf.read(tmp.name)
-        duration = len(data) / sr
-        log.info(f"TTS: playing {duration:.1f}s at {sr} Hz")
-        sd.play(data, sr)
-        sd.wait()
-        log.info("TTS: playback complete")
-    except Exception as e:
-        log.error(f"TTS: _speak_async error: {e}", exc_info=True)
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+            log.error(f"TTS: speak_elevenlabs error: {e}", exc_info=True)
+    log.info("TTS: done")
 
 
 # ── Audio recording ───────────────────────────────────────────────────────────

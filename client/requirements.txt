@@ -1,0 +1,14 @@
+anthropic
+openai
+edge-tts
+elevenlabs
+sounddevice
+soundfile
+numpy
+watchdog
+pystray
+Pillow
+python-dotenv
+requests
+pynput
+truck-telemetry

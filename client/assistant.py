@@ -55,45 +55,23 @@ MIN_RECORD_SECS = 0.5
 BRIEFING_COOLDOWN = 180  # seconds between proactive messages
 
 PERSONALITIES = {
-    'professional': {
-        'voice': 'en-US-GuyNeural',
-        'prompt': (
-            "You are a calm, professional trucking dispatcher with years of industry experience. "
-            "You speak in clear, concise radio-style language. Address the driver respectfully. "
-            "Keep responses to 2-3 sentences unless a full briefing is explicitly requested."
-        ),
-    },
-    'friendly': {
-        'voice': 'en-US-DavisNeural',
-        'prompt': (
-            "You are a friendly, upbeat trucking dispatcher who knows the driver well. "
-            "You're encouraging and conversational, always professional and on-topic. "
-            "Keep responses to 2-3 sentences unless a full briefing is explicitly requested."
-        ),
-    },
-    'tactical': {
-        'voice': 'en-US-TonyNeural',
-        'prompt': (
-            "You are a no-nonsense tactical dispatcher. Give direct, data-driven answers. "
-            "Speak in short decisive phrases. Lead with the most important number or fact. "
-            "No fluff. Maximum 2 sentences."
-        ),
-    },
-    'female_professional': {
-        'voice': 'en-US-JennyNeural',
-        'prompt': (
-            "You are a professional female dispatcher known for accuracy and clarity. "
-            "Warm but efficient — every word earns its place. "
-            "Keep responses to 2-3 sentences unless a full briefing is explicitly requested."
-        ),
-    },
+    'professional':      {'voice': 'en-US-GuyNeural'},
+    'friendly':          {'voice': 'en-US-DavisNeural'},
+    'tactical':          {'voice': 'en-US-TonyNeural'},
+    'female_professional': {'voice': 'en-US-JennyNeural'},
 }
 
-SCOPE_GUARD = (
-    "You are a trucking dispatch assistant. You ONLY answer questions about jobs, routes, "
-    "cargo, fleet management, finances, and trucking operations. "
-    "If asked anything outside this scope, politely decline and redirect to trucking topics. "
-    "Never discuss unrelated topics, politics, or general knowledge questions."
+SYSTEM_PROMPT = (
+    "You are a no-nonsense radio dispatcher for a trucking fleet. Keep responses SHORT — "
+    "1-3 sentences max. No fluff, no \"certainly\", no \"I'd be happy to help\". Talk like a "
+    "real CB radio dispatcher: direct, clipped, a little gritty. Use occasional trucker phrases "
+    "naturally (copy that, what's your 20, keep the shiny side up, hammer down, lot lizard, "
+    "bear, etc.) but don't overdo it.\n\n"
+    "If asked about available jobs or freight, ONLY report what is in the provided save data "
+    "under the \"jobs\" or \"freight_market\" keys. If that data is empty or missing, say "
+    "exactly: \"Freight market's empty in the save data right now, driver. Try a manual save "
+    "to refresh.\" Never invent job listings.\n\n"
+    "Current session data will be provided in each message as JSON."
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -428,18 +406,20 @@ def query_claude(user_message: str, prefs: dict,
         return _FALLBACK['no_key']
 
     personality = prefs.get('personality', 'professional')
-    persona = PERSONALITIES.get(personality, PERSONALITIES['professional'])
-    context = build_context(telemetry, snapshot, freight_market, prefs, session_start_snap)
 
-    system = f"{SCOPE_GUARD}\n\n{persona['prompt']}\n\nCURRENT GAME STATE:\n{context}"
+    if snapshot:
+        data_block = json.dumps(snapshot, indent=2)
+        full_message = f"Current game data:\n{data_block}\n\n{user_message}"
+    else:
+        full_message = f"No save data loaded yet.\n\n{user_message}"
 
     try:
         log.info(f"Claude: sending request (model=claude-sonnet-4-5, personality={personality})")
         resp = client.messages.create(
             model='claude-sonnet-4-5',
             max_tokens=300,
-            system=system,
-            messages=[{'role': 'user', 'content': user_message}],
+            system=SYSTEM_PROMPT,
+            messages=[{'role': 'user', 'content': full_message}],
         )
         text = resp.content[0].text.strip()
         log.info(f"Claude: received {len(text)} chars, stop_reason={resp.stop_reason}")

@@ -406,11 +406,24 @@ def query_claude(user_message: str, prefs: dict,
 
     personality = prefs.get('personality', 'professional')
 
+    # ── Snapshot diagnostics ──────────────────────────────────────────────────
+    snap_keys = list(snapshot.keys()) if snapshot else []
+    log.info(f"Claude: snapshot keys={snap_keys}, "
+             f"jobs={len(snapshot.get('jobs', []))}, "
+             f"freight_market={len(snapshot.get('freight_market', []))}")
+
     if snapshot:
         data_block = json.dumps(snapshot, indent=2)
         full_message = f"Current game data:\n{data_block}\n\n{user_message}"
     else:
         full_message = f"No save data loaded yet.\n\n{user_message}"
+
+    # ── Log what we're sending ────────────────────────────────────────────────
+    log.info(f"Claude: user_message={user_message!r}")
+    log.info(f"Claude: full_message total length={len(full_message)} chars")
+    messages_payload = [{'role': 'user', 'content': full_message}]
+    log.info(f"Claude: messages array (first 500 chars of content)="
+             f"{full_message[:500]!r}")
 
     try:
         log.info(f"Claude: sending request (model=claude-sonnet-4-5, personality={personality})")
@@ -418,16 +431,19 @@ def query_claude(user_message: str, prefs: dict,
             model='claude-sonnet-4-5',
             max_tokens=300,
             system=SYSTEM_PROMPT,
-            messages=[{'role': 'user', 'content': full_message}],
+            messages=messages_payload,
         )
+        log.info(f"Claude: raw response content={resp.content!r}")
         text = resp.content[0].text.strip()
         log.info(f"Claude: received {len(text)} chars, stop_reason={resp.stop_reason}")
         return text
     except anthropic.APIStatusError as e:
-        log.error(f"Claude: API error status={e.status_code}: {e.message}", exc_info=True)
+        log.error(f"Claude: APIStatusError status={e.status_code} message={e.message!r}",
+                  exc_info=True)
         return _FALLBACK['api_error']
     except Exception as e:
-        log.error(f"Claude: unexpected error: {e}", exc_info=True)
+        log.error(f"Claude: unexpected error type={type(e).__name__} repr={e!r}",
+                  exc_info=True)
         return _FALLBACK['api_error']
 
 
@@ -634,9 +650,14 @@ def _process_voice_input(wav_path: str):
         t0 = time.monotonic()
         try:
             tel, snap, market, _, start_snap = state.read()
+            log.info(f"Pipeline: snapshot has keys={list(snap.keys())}, "
+                     f"jobs={len(snap.get('jobs', []))}, "
+                     f"freight_market={len(snap.get('freight_market', []))}, "
+                     f"snapshot_empty={not snap}")
             response = query_claude(text, prefs, tel, snap, market, start_snap)
         except Exception as e:
-            log.error(f"Pipeline: query_claude() raised: {e}", exc_info=True)
+            log.error(f"Pipeline: query_claude() raised type={type(e).__name__} repr={e!r}",
+                      exc_info=True)
             return
         elapsed = time.monotonic() - t0
         log.info(f"Pipeline: Claude responded in {elapsed:.1f}s — {response!r}")

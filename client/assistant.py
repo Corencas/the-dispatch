@@ -3,7 +3,7 @@ assistant.py — AI voice dispatch co-pilot for The Dispatch.
 
 Runs as daemon threads alongside the existing save watcher and telemetry reader.
 Listens for voice input (push-to-talk or wake word), transcribes via OpenAI Whisper,
-reasons via Claude claude-sonnet-4-20250514, and responds via edge-tts.
+reasons via Claude claude-sonnet-4-5, and responds via edge-tts.
 
 Thread model:
   - main thread: pystray (untouched)
@@ -434,9 +434,9 @@ def query_claude(user_message: str, prefs: dict,
     system = f"{SCOPE_GUARD}\n\n{persona['prompt']}\n\nCURRENT GAME STATE:\n{context}"
 
     try:
-        log.info(f"Claude: sending request (model=claude-sonnet-4-20250514, personality={personality})")
+        log.info(f"Claude: sending request (model=claude-sonnet-4-5, personality={personality})")
         resp = client.messages.create(
-            model='claude-sonnet-4-20250514',
+            model='claude-sonnet-4-5',
             max_tokens=300,
             system=system,
             messages=[{'role': 'user', 'content': user_message}],

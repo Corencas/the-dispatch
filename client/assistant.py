@@ -378,18 +378,29 @@ def build_context_summary(snapshot: dict) -> str:
     if not snapshot:
         return "No game data loaded."
 
+    # ── Diagnostics: log raw snapshot shape so we can identify field names ────
+    log.info(f"SNAP_KEYS: {list(snapshot.keys())}")
+    log.info(f"SNAP_PLAYER: {snapshot.get('player')!r}")
+    raw_jobs = snapshot.get("jobs", [])
+    log.info(f"SNAP_JOBS[0]: {raw_jobs[:1]!r}")
+    raw_fm = snapshot.get("freight_market", [])
+    if isinstance(raw_fm, dict):
+        raw_fm = raw_fm.get("offers", [])
+    log.info(f"SNAP_FM[0]: {raw_fm[:1]!r}")
+
     ctx: dict = {}
     ctx["money"] = snapshot.get("finances", {}).get("money", "unknown")
 
+    # Current city: player block has no city — check top-level keys and jobs
     player = snapshot.get("player", {})
-    log.info(f"build_context_summary: player keys={list(player.keys()) if isinstance(player, dict) else player!r}")
-    # Try common field names for the player's current city
-    ctx["current_city"] = (
-        player.get("city")
-        or player.get("current_city")
-        or player.get("city_name")
-        or snapshot.get("current_city", "unknown")
+    city = (
+        snapshot.get("current_city")
+        or snapshot.get("city")
+        or (raw_jobs[0].get("source_city") if raw_jobs else None)
+        or (raw_fm[0].get("source_city") if isinstance(raw_fm, list) and raw_fm else None)
+        or "unknown"
     )
+    ctx["current_city"] = city
 
     job = snapshot.get("current_job", {})
     if job:
@@ -402,29 +413,43 @@ def build_context_summary(snapshot: dict) -> str:
     else:
         ctx["current_job"] = None
 
-    # freight_market is a list directly in this game's save format
+    # freight_market is a flat list in this save format
     offers = snapshot.get("freight_market", [])
     if isinstance(offers, dict):
         offers = offers.get("offers", [])
     if not isinstance(offers, list):
         offers = []
 
-    jobs = snapshot.get("jobs", [])
-    if not isinstance(jobs, list):
-        jobs = []
+    jobs = raw_jobs if isinstance(raw_jobs, list) else []
+
+    # Detect income field name from the first available item
+    _sample = (offers or jobs or [None])[0]
+    _income_key = "income"
+    if isinstance(_sample, dict):
+        for _k in ("income", "reward", "pay", "revenue", "payment"):
+            if _k in _sample:
+                _income_key = _k
+                break
+    log.info(f"SNAP_INCOME_KEY: {_income_key!r} (detected from first offer/job)")
+
+    # Detect cargo/city field names from same sample
+    _cargo_key  = next((k for k in ("cargo", "cargo_name", "freight") if isinstance(_sample, dict) and k in _sample), "cargo")
+    _src_key    = next((k for k in ("source_city", "origin", "origin_city", "from_city") if isinstance(_sample, dict) and k in _sample), "source_city")
+    _dst_key    = next((k for k in ("destination_city", "destination", "dest_city", "to_city") if isinstance(_sample, dict) and k in _sample), "destination_city")
+    _dist_key   = next((k for k in ("distance", "distance_km", "dist_km") if isinstance(_sample, dict) and k in _sample), "distance")
 
     # Use whichever source has more entries
     candidates = offers if len(offers) >= len(jobs) else jobs
-    top_jobs = sorted(candidates, key=lambda x: x.get("income", 0), reverse=True)[:10]
+    top_jobs = sorted(candidates, key=lambda x: x.get(_income_key, 0) if isinstance(x, dict) else 0, reverse=True)[:10]
     ctx["top_freight_jobs"] = [
         {
-            "cargo": j.get("cargo", "unknown"),
-            "source": j.get("source_city", "?"),
-            "destination": j.get("destination_city", "?"),
-            "income": j.get("income", 0),
-            "distance": j.get("distance", "?"),
+            "cargo":       j.get(_cargo_key, "unknown"),
+            "source":      j.get(_src_key, "?"),
+            "destination": j.get(_dst_key, "?"),
+            "income":      j.get(_income_key, 0),
+            "distance":    j.get(_dist_key, "?"),
         }
-        for j in top_jobs
+        for j in top_jobs if isinstance(j, dict)
     ]
 
     ctx["drivers"] = [

@@ -61,21 +61,15 @@ PERSONALITIES = {
 }
 
 SYSTEM_PROMPT = (
-    "You are a gruff, seasoned truck dispatcher on CB radio. You talk like a real person — "
-    "natural, fluid, conversational. No bullet points, no arrows, no special characters, no "
-    "line breaks mid-sentence.\n\n"
-    "When listing jobs, speak them out naturally like you're reading off a clipboard: "
-    "\"Alright, top haul right now is home accessories out of Kelowna heading to Fredericton, "
-    "pays two oh five thousand for about fifty-three hundred klicks. Next one's darkwing "
-    "freight, Rd1 to Jacksonville, one ninety thousand, forty-nine hundred miles. Got sand "
-    "running to Jacksonville too, one eighty-six, similar distance.\"\n\n"
-    "Rules:\n"
-    "- Write responses as natural SPOKEN sentences only — no symbols, no arrows, no formatting\n"
-    "- Never use arrows, bullet points, or markdown of any kind\n"
-    "- Simple questions: 1-2 natural sentences\n"
-    "- Job listings: weave them into fluid speech, max 5 jobs\n"
-    "- Use trucker lingo naturally: 10-4, what's your 20, hammer down, bear, rubber duck, etc.\n"
-    "- Stop talking when the info is delivered"
+    "You are a gruff truck dispatcher on CB radio. Natural spoken voice only — no symbols, "
+    "no arrows, no formatting.\n\n"
+    "For job listings, keep it tight. One short sentence per job: cargo, destination, pay. "
+    "Max 3 jobs. Example: \"Best paying right now is home accessories to Fredericton, two oh "
+    "five thousand. Got a Darkwing run to Rd1, one ninety. Sand to Jacksonville, one "
+    "eighty-six.\"\n\n"
+    "For all other questions: 1-2 sentences max.\n\n"
+    "Distances are in miles — say \"miles\" not \"klicks\". Use trucker lingo naturally. "
+    "Stop talking the moment the info is delivered."
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -424,13 +418,14 @@ def build_context_summary(snapshot: dict) -> str:
     # Use whichever source has more entries; field names confirmed from save data
     candidates = offers if len(offers) >= len(jobs) else jobs
     top_jobs = sorted(candidates, key=lambda x: x.get("revenue", 0) if isinstance(x, dict) else 0, reverse=True)[:10]
+    ctx["units"] = "miles, USD"
     ctx["top_freight_jobs"] = [
         {
             "cargo":       j.get("cargo", "unknown"),
             "source":      j.get("source_city", "?"),
             "destination": j.get("destination_city", "?"),
             "income":      j.get("revenue", 0),
-            "distance":    j.get("distance_km", "?"),
+            "distance":    round(int(j.get("distance_km", 0)) * 0.621371),
         }
         for j in top_jobs if isinstance(j, dict)
     ]
@@ -497,7 +492,7 @@ def query_claude(user_message: str, prefs: dict,
                  f"history_msgs={len(recent)})")
         resp = client.messages.create(
             model='claude-sonnet-4-6',
-            max_tokens=200,
+            max_tokens=120,
             system=SYSTEM_PROMPT,
             messages=messages_payload,
         )

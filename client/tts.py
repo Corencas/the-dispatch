@@ -59,12 +59,14 @@ def speak_elevenlabs(text: str, voice_id: str | None = None):
 
             try:
                 import pygame
-                pygame.mixer.init()
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                if not pygame.mixer.get_init():
+                    raise RuntimeError("pygame mixer init failed")
                 pygame.mixer.music.load(tmp.name)
                 pygame.mixer.music.play()
                 while pygame.mixer.music.get_busy():
                     pygame.time.Clock().tick(10)
-                pygame.mixer.quit()
             finally:
                 try:
                     os.unlink(tmp.name)

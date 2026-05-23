@@ -5,11 +5,12 @@ def parse_sii(filepath):
         content = f.read()
 
     result = {
-        'finances': parse_finances(content),
-        'player': parse_player(content),
-        'drivers': parse_drivers(content),
-        'jobs': parse_jobs(content),
+        'finances':       parse_finances(content),
+        'player':         parse_player(content),
+        'drivers':        parse_drivers(content),
+        'jobs':           parse_jobs(content),
         'freight_market': [],
+        'trailer':        parse_trailer(content),
     }
 
     return result
@@ -42,6 +43,34 @@ def parse_finances(content):
     finances['total_debt'] = sum(l['amount'] for l in loans)
 
     return finances
+
+
+def parse_trailer(content):
+    """Extract current trailer type and active cargo from the save file."""
+    trailer = {}
+
+    # Trailer reference in the economy block
+    my_trailer_m = re.search(r'\bmy_trailer\s*:\s*(\S+)', content)
+    trailer['id'] = my_trailer_m.group(1) if my_trailer_m else None
+
+    # Active job cargo / destination from job_info block
+    job_info_m = re.search(r'job_info\s*:.*?\{([^}]*)\}', content, re.DOTALL)
+    if job_info_m:
+        block = job_info_m.group(1)
+        cargo_m  = re.search(r'\bcargo\s*:\s*"?([^"\n]+)"?', block)
+        target_m = re.search(r'target(?:_company)?\s*:\s*"?([^"\n]+)"?', block)
+        trailer['active_cargo']       = cargo_m.group(1).strip() if cargo_m else None
+        trailer['active_destination'] = target_m.group(1).strip() if target_m else None
+
+    # Trailer definition type (e.g. "trailer.flatbed", "trailer.curtain")
+    trailer_def_m = re.search(
+        r'\btrailer\b\s*:\s*trailer\.\S+\s*\{([^}]*)\}', content, re.DOTALL
+    )
+    if trailer_def_m:
+        td_m = re.search(r'\btrailer_def\s*:\s*"?([^"\n]+)"?', trailer_def_m.group(1))
+        trailer['type'] = td_m.group(1).strip() if td_m else None
+
+    return trailer
 
 
 def parse_player(content):
@@ -120,18 +149,22 @@ def parse_jobs(content):
         if revenue_val == 0:
             continue
 
+        market_m = re.search(r'market(?:_type)?\s*:\s*"?([^"\n]+)"?', block)
+        market = market_m.group(1).strip() if market_m else 'cargo_market'
+
         jobs.append({
-            'revenue': revenue_val,
-            'wage': int(wage.group(1)) if wage else 0,
-            'fuel': int(fuel.group(1)) if fuel else 0,
-            'maintenance': int(maintenance.group(1)) if maintenance else 0,
-            'distance_km': int(distance.group(1)) if distance else 0,
-            'cargo': cargo.group(1).strip() if cargo else '',
-            'source_city': source_city.group(1).strip() if source_city else '',
-            'destination_city': dest_city.group(1).strip() if dest_city else '',
-            'source_company': source_company.group(1).strip() if source_company else '',
+            'revenue':             revenue_val,
+            'wage':                int(wage.group(1)) if wage else 0,
+            'fuel':                int(fuel.group(1)) if fuel else 0,
+            'maintenance':         int(maintenance.group(1)) if maintenance else 0,
+            'distance_km':         int(distance.group(1)) if distance else 0,
+            'cargo':               cargo.group(1).strip() if cargo else '',
+            'source_city':         source_city.group(1).strip() if source_city else '',
+            'destination_city':    dest_city.group(1).strip() if dest_city else '',
+            'source_company':      source_company.group(1).strip() if source_company else '',
             'destination_company': dest_company.group(1).strip() if dest_company else '',
-            'day': int(timestamp.group(1)) if timestamp else 0,
+            'day':                 int(timestamp.group(1)) if timestamp else 0,
+            'market':              market,
         })
 
     jobs.sort(key=lambda j: j['day'], reverse=True)
@@ -254,6 +287,7 @@ def parse_freight_market(content):
             'revenue':             revenue,
             'urgency':             urgency,
             'expiration_time':     expiry,
+            'market':              'freight_market',
         })
 
     print(f'[Parser] Freight market: {len(jobs)} current offers (from discovered companies, not expired)')

@@ -65,9 +65,14 @@ SYSTEM_PROMPT = (
     "You are a gruff truck dispatcher on CB radio. Natural spoken voice only — no symbols, "
     "no arrows, no formatting.\n\n"
     "For job listings, keep it tight. One short sentence per job: cargo, destination, pay. "
-    "Max 3 jobs. Example: \"Best paying right now is home accessories to Fredericton, two oh "
-    "five thousand. Got a Darkwing run to Rd1, one ninety. Sand to Jacksonville, one "
-    "eighty-six.\"\n\n"
+    "Max 3 jobs. Example: \"Best paying right now is home accessories to Fredericton, two "
+    "hundred and five thousand dollars. Got a Darkwing run to Rd1, one ninety thousand. "
+    "Sand to Jacksonville, one eighty-six thousand.\"\n\n"
+    "You will be given a list of jobs. Each job includes which market it came from. Group "
+    "jobs by market when listing them. Say which market they're from: 'cargo market', "
+    "'freight market', or 'quick jobs'. Example: 'Best three are out of the cargo market "
+    "— home accessories to Fredericton, two hundred and five thousand dollars. Darkwing to "
+    "Rd1...' If all from the same market, just say it once upfront.\n\n"
     "For all other questions: 1-2 sentences max.\n\n"
     "Distances are in miles — say \"miles\" not \"klicks\". Use trucker lingo naturally. "
     "Always say the full dollar amount out loud. Say \"two hundred and five thousand dollars\" "
@@ -398,29 +403,49 @@ def build_context_summary(snapshot: dict) -> str:
     if not isinstance(jobs, list):
         jobs = []
 
-    # Current city: check top-level keys, then fall back to first offer's source
+    # Diagnostics: log raw items so we can verify field names and market type
+    log.info(f"SNAP_JOBS_RAW[:3]: {jobs[:3]!r}")
+    log.info(f"SNAP_FM_RAW[:1]: {offers[:1]!r}")
+
+    # Prefer jobs (trailer-filtered available hauls) over raw freight_market
+    if jobs:
+        candidates = jobs
+        log.info(f"Job source: snapshot['jobs'] ({len(jobs)} entries)")
+    else:
+        candidates = offers
+        log.info(f"Job source: snapshot['freight_market'] fallback ({len(offers)} entries)")
+
+    # Current city: check top-level keys, then fall back to first candidate's source
     ctx["current_city"] = (
         snapshot.get("current_city")
         or snapshot.get("city")
-        or (offers[0].get("source_city") if offers else None)
-        or (jobs[0].get("source_city") if jobs else None)
+        or (candidates[0].get("source_city") if candidates else None)
         or "unknown"
     )
+
+    # Trailer / active cargo
+    trailer = snapshot.get("trailer", {}) or {}
+    log.info(f"SNAP_TRAILER: {trailer!r}")
+    if trailer:
+        ctx["trailer"] = {k: v for k, v in trailer.items() if v is not None}
 
     job = snapshot.get("current_job", {})
     if job:
         ctx["current_job"] = {
-            "cargo":             job.get("cargo", "none"),
-            "destination":       job.get("destination_city", "unknown"),
-            "income":            job.get("revenue", 0),
+            "cargo":              job.get("cargo", "none"),
+            "destination":        job.get("destination_city", "unknown"),
+            "income":             job.get("revenue", 0),
             "distance_remaining": job.get("distance_remaining", "unknown"),
         }
     else:
         ctx["current_job"] = None
 
-    # Use whichever source has more entries; field names confirmed from save data
-    candidates = offers if len(offers) >= len(jobs) else jobs
-    top_jobs = sorted(candidates, key=lambda x: x.get("revenue", 0) if isinstance(x, dict) else 0, reverse=True)[:10]
+    top_jobs = sorted(
+        [j for j in candidates if isinstance(j, dict)],
+        key=lambda x: x.get("revenue", 0),
+        reverse=True,
+    )[:10]
+
     ctx["units"] = "miles, USD"
     ctx["top_freight_jobs"] = [
         {
@@ -429,8 +454,9 @@ def build_context_summary(snapshot: dict) -> str:
             "destination": j.get("destination_city", "?"),
             "income":      j.get("revenue", 0),
             "distance":    round(int(j.get("distance_km", 0)) * 0.621371),
+            "market":      j.get("market", "unknown"),
         }
-        for j in top_jobs if isinstance(j, dict)
+        for j in top_jobs
     ]
 
     ctx["drivers"] = [

@@ -15,6 +15,7 @@ Thread model:
 import json
 import logging
 import os
+import queue
 import re
 import tempfile
 import threading
@@ -566,23 +567,27 @@ def _parse_pref_command(text: str, prefs: dict) -> tuple[dict, str | None]:
 
 # ── TTS output ────────────────────────────────────────────────────────────────
 
-_tts_lock = threading.Lock()  # serialize audio output; avoids overlapping speech
+tts_queue: queue.Queue = queue.Queue()
 
 
 def speak(text: str, prefs: dict | None = None):
-    """Play TTS in a non-blocking daemon thread."""
-    threading.Thread(target=_speak_blocking, args=(text,), daemon=True).start()
+    """Enqueue text for TTS — never interrupts current speech."""
+    tts_queue.put(text)
 
 
-def _speak_blocking(text: str):
-    log.info(f"TTS: waiting for lock (chars={len(text)})")
-    with _tts_lock:
-        log.info("TTS: lock acquired, calling ElevenLabs")
+def _tts_worker():
+    """Single dedicated daemon thread: speaks one queued item at a time, FIFO."""
+    while True:
+        text = tts_queue.get()
+        log.info(f"TTS: speaking ({len(text)} chars)")
         try:
             speak_elevenlabs(text)
         except Exception as e:
             log.error(f"TTS: speak_elevenlabs error: {e}", exc_info=True)
-    log.info("TTS: done")
+        finally:
+            tts_queue.task_done()
+        log.info("TTS: done, 2.5s gap before next item")
+        time.sleep(2.5)
 
 
 # ── Audio recording ───────────────────────────────────────────────────────────
@@ -1104,6 +1109,10 @@ def start(voice_mode: str | None = None):
     """
     log.info("assistant.start() called")
     print("[Assistant] start() called", flush=True)
+
+    # TTS worker — single FIFO thread, runs for the lifetime of the process
+    threading.Thread(target=_tts_worker, daemon=True, name='tts-worker').start()
+    log.info("Assistant: TTS worker thread started")
 
     if not OPENAI_API_KEY:
         log.warning("OPENAI_API_KEY not set — voice transcription will be unavailable")

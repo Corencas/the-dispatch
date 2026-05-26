@@ -77,7 +77,10 @@ SYSTEM_PROMPT = (
     "Distances are in miles — say \"miles\" not \"klicks\". Use trucker lingo naturally. "
     "Always say the full dollar amount out loud. Say \"two hundred and five thousand dollars\" "
     "not \"two oh five thousand\". Never abbreviate pay amounts. "
-    "Stop talking the moment the info is delivered."
+    "Stop talking the moment the info is delivered.\n\n"
+    "You will be told if the driver already has an active load. If they do, do not list new "
+    "jobs — instead confirm their current delivery details if asked. Only list available jobs "
+    "when the driver has no active load or explicitly asks for options."
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -392,7 +395,32 @@ def build_context_summary(snapshot: dict) -> str:
     ctx: dict = {}
     ctx["money"] = snapshot.get("finances", {}).get("money", "unknown")
 
-    # freight_market is a flat list in this save format
+    # ── Trailer extraction ────────────────────────────────────────────────────
+    trailer = snapshot.get("trailer", {}) or {}
+    log.info(f"SNAP_TRAILER: {trailer!r}")
+
+    active_cargo       = trailer.get("active_cargo", "") or ""
+    active_destination = trailer.get("active_destination", "") or ""
+
+    # Extract cargo type code: 'cargo.catd6rpm' → 'catd6rpm'
+    trailer_cargo_type = ""
+    if active_cargo:
+        parts = active_cargo.split(".", 1)
+        trailer_cargo_type = parts[1] if len(parts) > 1 else active_cargo
+
+    trailer_attached = bool(trailer)
+    has_active_job   = bool(active_destination)
+
+    ctx["trailer_attached"]   = trailer_attached
+    ctx["trailer_cargo_type"] = trailer_cargo_type or None
+    ctx["has_active_job"]     = has_active_job
+
+    log.info(
+        f"TRAILER STATE — attached={trailer_attached}, "
+        f"cargo_type={trailer_cargo_type!r}, has_active_job={has_active_job}"
+    )
+
+    # ── Raw job / market data ─────────────────────────────────────────────────
     offers = snapshot.get("freight_market", [])
     if isinstance(offers, dict):
         offers = offers.get("offers", [])
@@ -403,42 +431,68 @@ def build_context_summary(snapshot: dict) -> str:
     if not isinstance(jobs, list):
         jobs = []
 
-    # Diagnostics: log raw items so we can verify field names and market type
     log.info(f"SNAP_JOBS_RAW[:3]: {jobs[:3]!r}")
     log.info(f"SNAP_FM_RAW[:1]: {offers[:1]!r}")
 
-    # Prefer jobs (trailer-filtered available hauls) over raw freight_market
-    if jobs:
-        candidates = jobs
-        log.info(f"Job source: snapshot['jobs'] ({len(jobs)} entries)")
-    else:
-        candidates = offers
-        log.info(f"Job source: snapshot['freight_market'] fallback ({len(offers)} entries)")
+    # ── Job source logic ──────────────────────────────────────────────────────
+    if has_active_job:
+        # Driver is already loaded — surface the active run, suppress new job listings
+        dest_parts = active_destination.split(".")
+        dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else active_destination
+        company    = dest_parts[1].replace("_", " ").title() if len(dest_parts) > 1 else ""
 
-    # Current city: check top-level keys, then fall back to first candidate's source
+        ctx["current_job"] = {
+            "cargo":           trailer_cargo_type or active_cargo,
+            "destination":     dest_city,
+            "company":         company,
+            "raw_destination": active_destination,
+        }
+        ctx["job_status"] = (
+            "ACTIVE_LOAD: Driver already has an active load. "
+            "Do not suggest new jobs unless explicitly asked."
+        )
+        candidates = []
+        log.info(
+            f"Job source: active load in progress → "
+            f"dest={dest_city!r}, cargo_type={trailer_cargo_type!r}"
+        )
+
+    elif trailer_attached and trailer_cargo_type:
+        # Trailer attached, no active job — filter available jobs to matching cargo type
+        ctx["current_job"] = None
+        matched = [
+            j for j in jobs
+            if trailer_cargo_type.lower() in j.get("cargo", "").lower()
+        ]
+        if matched:
+            candidates = matched
+            log.info(
+                f"Job source: trailer-filtered jobs "
+                f"(type={trailer_cargo_type!r}, {len(matched)} matches of {len(jobs)})"
+            )
+        else:
+            candidates = jobs
+            log.info(
+                f"Job source: trailer attached (type={trailer_cargo_type!r}) but no cargo "
+                f"match — showing all {len(jobs)} jobs"
+            )
+
+    else:
+        # No trailer — show freight_market (company trailer) jobs
+        ctx["current_job"] = None
+        candidates = offers if offers else jobs
+        log.info(
+            f"Job source: no trailer → freight_market ({len(offers)} offers) "
+            f"or jobs fallback ({len(jobs)})"
+        )
+
+    # ── Shared fields ─────────────────────────────────────────────────────────
     ctx["current_city"] = (
         snapshot.get("current_city")
         or snapshot.get("city")
         or (candidates[0].get("source_city") if candidates else None)
         or "unknown"
     )
-
-    # Trailer / active cargo
-    trailer = snapshot.get("trailer", {}) or {}
-    log.info(f"SNAP_TRAILER: {trailer!r}")
-    if trailer:
-        ctx["trailer"] = {k: v for k, v in trailer.items() if v is not None}
-
-    job = snapshot.get("current_job", {})
-    if job:
-        ctx["current_job"] = {
-            "cargo":              job.get("cargo", "none"),
-            "destination":        job.get("destination_city", "unknown"),
-            "income":             job.get("revenue", 0),
-            "distance_remaining": job.get("distance_remaining", "unknown"),
-        }
-    else:
-        ctx["current_job"] = None
 
     top_jobs = sorted(
         [j for j in candidates if isinstance(j, dict)],

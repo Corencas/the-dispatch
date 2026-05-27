@@ -497,10 +497,10 @@ def main():
     observer_ref = {'obs': observer}
     threading.Thread(target=observer.join, daemon=True).start()
 
-    # Launch the pygame overlay in its own daemon thread
+    # Launch the game-overlay-sdk HUD (injects into ATS/ETS2 DirectX process)
     try:
-        from overlay import start_overlay
-        start_overlay()
+        from overlay import start_overlay, overlay_state as _ov_state
+        start_overlay(_ov_state)
     except Exception as _ov_err:
         print(f'[Dispatch] Overlay failed to start: {_ov_err}')
 

@@ -694,6 +694,16 @@ tts_queue: queue.Queue = queue.Queue()
 # with an early PTT press.
 _startup_complete: bool = False
 
+# Mute flag toggled by the overlay's MUTE button.
+_tts_muted: bool = False
+
+
+def _set_tts_muted(muted: bool):
+    """Called by the overlay mute button to silence / restore TTS."""
+    global _tts_muted
+    _tts_muted = muted
+    log.info(f"TTS: muted={muted}")
+
 
 def speak(text: str, prefs: dict | None = None):
     """Enqueue text for TTS — never interrupts current speech."""
@@ -704,6 +714,10 @@ def _tts_worker():
     """Single dedicated daemon thread: speaks one queued item at a time, FIFO."""
     while True:
         text = tts_queue.get()
+        if _tts_muted:
+            log.info(f"TTS: muted — skipping ({len(text)} chars)")
+            tts_queue.task_done()
+            continue
         log.info(f"TTS: speaking ({len(text)} chars)")
         try:
             speak_elevenlabs(text)
@@ -840,6 +854,14 @@ def _process_voice_input(wav_path: str):
             log.info("Pipeline: empty transcript — aborting (no speech detected)")
             return
 
+        # Push transcript to overlay
+        try:
+            from overlay import overlay_state
+            overlay_state.last_transcript = text
+            overlay_state.transcript_time = time.monotonic()
+        except Exception:
+            pass
+
         prefs = load_prefs()
 
         # ── Step 3: preference-update shortcut ────────────────────────────────
@@ -871,6 +893,17 @@ def _process_voice_input(wav_path: str):
             return
         elapsed = time.monotonic() - t0
         log.info(f"Pipeline: Claude responded in {elapsed:.1f}s — {response!r}")
+
+        # Push AI response to overlay (subtitle + history)
+        try:
+            from overlay import overlay_state
+            overlay_state.last_response  = response
+            overlay_state.response_time  = time.monotonic()
+            overlay_state.history.append({"role": "user",      "text": text})
+            overlay_state.history.append({"role": "assistant", "text": response})
+            overlay_state.history = overlay_state.history[-20:]   # keep last 10 turns
+        except Exception:
+            pass
 
         # ── Step 5: TTS ───────────────────────────────────────────────────────
         log.info(f"Pipeline: launching TTS for {len(response)} chars")
@@ -971,6 +1004,13 @@ def _ptt_loop():
                 log.info("PTT: key DOWN — recording...")
                 print("[PTT] KEY DOWN — recording", flush=True)
 
+                # Notify overlay
+                try:
+                    from overlay import overlay_state
+                    overlay_state.recording = True
+                except Exception:
+                    pass
+
                 def do_record(se=stop_event, wh=wav_holder):
                     wh[0] = record_audio(se)
 
@@ -981,6 +1021,14 @@ def _ptt_loop():
             nonlocal recording, stop_event, record_thread, wav_holder
             if key == target and recording:
                 recording = False
+
+                # Notify overlay — recording stopped
+                try:
+                    from overlay import overlay_state
+                    overlay_state.recording = False
+                except Exception:
+                    pass
+
                 if stop_event:
                     stop_event.set()
                 if record_thread:

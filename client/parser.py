@@ -214,8 +214,12 @@ def parse_player(content):
 
     # Search globally for in_job — it lives inside the large economy block but
     # that block contains many nested sub-blocks so we don't try to bound it.
-    in_job_m = re.search(r'\bin_job\s*:\s*(true|false)', content)
-    player['in_job'] = (in_job_m.group(1) == 'true') if in_job_m else None
+    # SII files store booleans as the strings 'true'/'false'; also handle 1/0.
+    in_job_m = re.search(r'\bin_job\s*:\s*(true|false|1|0)\b', content, re.IGNORECASE)
+    if in_job_m:
+        player['in_job'] = in_job_m.group(1).lower() in ('true', '1')
+    else:
+        player['in_job'] = False  # field absent → not in job
 
     # Economy block — grab the stats fields we care about.
     # NOTE: the economy block is huge (contains nested blocks) so the regex may

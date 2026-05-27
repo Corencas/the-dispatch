@@ -14,7 +14,7 @@ from parser import parse_sii, parse_freight_market
 from dotenv import load_dotenv
 import pystray
 from PIL import Image, ImageDraw
-from dispatcher import generate_and_play, build_dispatch_messages
+from dispatcher import build_dispatch_messages
 from telemetry import start_telemetry_loop
 import assistant
 
@@ -183,7 +183,7 @@ def push_data(filepath):
         messages = build_dispatch_messages(last_snapshot, data)
         for msg in messages:
             print(f'[Dispatch] 📻 {msg}')
-            generate_and_play(msg)
+            assistant.speak(msg)   # routes through tts_queue — never overlaps PTT
 
         last_snapshot = data
 

@@ -1,11 +1,3 @@
-import threading
-from tts import speak_elevenlabs
-
-
-def generate_and_play(message: str):
-    """Speak a dispatch message via ElevenLabs (non-blocking)."""
-    threading.Thread(target=speak_elevenlabs, args=(message,), daemon=True).start()
-
 def build_dispatch_messages(old_snapshot: dict, new_snapshot: dict) -> list:
     """Compare two snapshots and generate dispatch messages for what changed."""
     messages = []

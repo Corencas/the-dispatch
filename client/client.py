@@ -497,7 +497,7 @@ def main():
     observer_ref = {'obs': observer}
     threading.Thread(target=observer.join, daemon=True).start()
 
-    # Launch the pygame HUD (always-on-top window, borderless windowed mode)
+    # Launch the tkinter HUD (always-on-top window, borderless windowed mode)
     try:
         from overlay import start_overlay, overlay_state as _ov_state
         start_overlay(_ov_state)

@@ -78,9 +78,15 @@ SYSTEM_PROMPT = (
     "Always say the full dollar amount out loud. Say \"two hundred and five thousand dollars\" "
     "not \"two oh five thousand\". Never abbreviate pay amounts. "
     "Stop talking the moment the info is delivered.\n\n"
-    "You will be told if the driver already has an active load. If they do, do not list new "
-    "jobs — instead confirm their current delivery details if asked. Only list available jobs "
-    "when the driver has no active load or explicitly asks for options."
+    "You will be told if the driver already has an active load. If they ask what jobs are "
+    "available, lead with a one-sentence reminder that they're already loaded, then list "
+    "the available options anyway. Never refuse to list jobs.\n\n"
+    "top_freight_jobs contains available jobs. Cargo-market jobs (owned trailers) have a "
+    "'trailer_cargo_type' field and 'market':'cargo_market'. Freight-market jobs use "
+    "company trailers. owned_trailers lists every trailer the driver owns by cargo_type. "
+    "When the driver asks about jobs for a specific trailer they mention (flatbed, reefer, "
+    "curtain, etc.), find the matching cargo_type in owned_trailers and filter "
+    "top_freight_jobs to that trailer_cargo_type."
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -420,23 +426,38 @@ def build_context_summary(snapshot: dict) -> str:
         f"cargo_type={trailer_cargo_type!r}, has_active_job={has_active_job}"
     )
 
-    # ── Raw job / market data ─────────────────────────────────────────────────
-    offers = snapshot.get("freight_market", [])
-    if isinstance(offers, dict):
-        offers = offers.get("offers", [])
-    if not isinstance(offers, list):
-        offers = []
+    # ── Raw data ──────────────────────────────────────────────────────────────
+    freight_market = snapshot.get("freight_market", [])
+    if isinstance(freight_market, dict):
+        freight_market = freight_market.get("offers", [])
+    if not isinstance(freight_market, list):
+        freight_market = []
 
-    jobs = snapshot.get("jobs", [])
-    if not isinstance(jobs, list):
-        jobs = []
+    owned_trailers = snapshot.get("owned_trailers", [])   # [{body_type, label}, ...]
+    if not isinstance(owned_trailers, list):
+        owned_trailers = []
 
-    log.info(f"SNAP_JOBS_RAW[:3]: {jobs[:3]!r}")
-    log.info(f"SNAP_FM_RAW[:1]: {offers[:1]!r}")
+    trailer_body_type = snapshot.get("trailer", {}).get("body_type")  # current trailer type
+
+    log.info(f"SNAP_FM_RAW[:1]: {freight_market[:1]!r}")
+    log.info(f"SNAP_OWNED_TRAILERS: {owned_trailers!r}")
+    log.info(f"trailer_body_type={trailer_body_type!r}")
+
+    # Import the body-type matching helper from parser
+    try:
+        from parser import job_matches_body_type
+    except ImportError:
+        job_matches_body_type = None
+
+    def _filter_by_body_type(jobs: list, body_type: str) -> list:
+        if not body_type or not job_matches_body_type:
+            return jobs
+        matched = [j for j in jobs if job_matches_body_type(j.get("trailer_def", ""), body_type)]
+        return matched if matched else jobs  # fall back if nothing matches
 
     # ── Job source logic ──────────────────────────────────────────────────────
     if has_active_job:
-        # Driver is already loaded — surface the active run, suppress new job listings
+        # Driver is loaded — surface current run; still show matching jobs for planning ahead
         dest_parts = active_destination.split(".")
         dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else active_destination
         company    = dest_parts[1].replace("_", " ").title() if len(dest_parts) > 1 else ""
@@ -449,42 +470,34 @@ def build_context_summary(snapshot: dict) -> str:
         }
         ctx["job_status"] = (
             "ACTIVE_LOAD: Driver already has an active load. "
-            "Do not suggest new jobs unless explicitly asked."
+            "If asked about available jobs, briefly note they're already loaded, "
+            "then list the options below."
         )
-        candidates = []
+        candidates = _filter_by_body_type(freight_market, trailer_body_type)
         log.info(
-            f"Job source: active load in progress → "
-            f"dest={dest_city!r}, cargo_type={trailer_cargo_type!r}"
+            f"Job source: active load → dest={dest_city!r}, "
+            f"body_type={trailer_body_type!r}, fm_matches={len(candidates)}"
         )
 
-    elif trailer_attached and trailer_cargo_type:
-        # Trailer attached, no active job — filter available jobs to matching cargo type
+    elif trailer_attached and trailer_body_type:
+        # Trailer attached, no active job — filter freight market by this body type
         ctx["current_job"] = None
-        matched = [
-            j for j in jobs
-            if trailer_cargo_type.lower() in j.get("cargo", "").lower()
-        ]
-        if matched:
-            candidates = matched
-            log.info(
-                f"Job source: trailer-filtered jobs "
-                f"(type={trailer_cargo_type!r}, {len(matched)} matches of {len(jobs)})"
-            )
-        else:
-            candidates = jobs
-            log.info(
-                f"Job source: trailer attached (type={trailer_cargo_type!r}) but no cargo "
-                f"match — showing all {len(jobs)} jobs"
-            )
+        candidates = _filter_by_body_type(freight_market, trailer_body_type)
+        log.info(
+            f"Job source: trailer attached (body_type={trailer_body_type!r}), "
+            f"fm_matches={len(candidates)} of {len(freight_market)}"
+        )
 
     else:
-        # No trailer — show freight_market (company trailer) jobs
+        # No trailer (or unknown type) → full freight market
         ctx["current_job"] = None
-        candidates = offers if offers else jobs
-        log.info(
-            f"Job source: no trailer → freight_market ({len(offers)} offers) "
-            f"or jobs fallback ({len(jobs)})"
-        )
+        candidates = freight_market
+        log.info(f"Job source: no trailer → freight_market ({len(freight_market)} offers)")
+
+    # Expose owned trailer types so Claude can answer "what can I take with my flatbed?"
+    if owned_trailers:
+        ctx["owned_trailers"] = list({t.get("label", t.get("body_type", ""))
+                                      for t in owned_trailers if t.get("body_type")})
 
     # ── Shared fields ─────────────────────────────────────────────────────────
     ctx["current_city"] = (
@@ -503,12 +516,13 @@ def build_context_summary(snapshot: dict) -> str:
     ctx["units"] = "miles, USD"
     ctx["top_freight_jobs"] = [
         {
-            "cargo":       j.get("cargo", "unknown"),
-            "source":      j.get("source_city", "?"),
-            "destination": j.get("destination_city", "?"),
-            "income":      j.get("revenue", 0),
-            "distance":    round(int(j.get("distance_km", 0)) * 0.621371),
-            "market":      j.get("market", "unknown"),
+            "cargo":              j.get("cargo", "unknown"),
+            "source":             j.get("source_city", "?"),
+            "destination":        j.get("destination_city", "?"),
+            "income":             j.get("revenue", 0),
+            "distance":           round(int(j.get("distance_km", 0)) * 0.621371),
+            "market":             j.get("market", "unknown"),
+            "trailer_cargo_type": j.get("trailer_cargo_type"),   # cargo_market jobs only
         }
         for j in top_jobs
     ]

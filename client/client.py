@@ -123,18 +123,41 @@ def decrypt_save(filepath):
         print('[Dispatch] SII_Decrypt.exe not found — place it in the client folder')
         return None
 
+    # Copy first — ATS may hold an exclusive lock on the original save file.
+    # Decrypting a copy avoids blocking on that lock.
+    copy_tmp = tempfile.NamedTemporaryFile(suffix='_copy.sii', delete=False)
+    copy_tmp.close()
+    try:
+        shutil.copy2(filepath, copy_tmp.name)
+        print(f'[Dispatch] Copied save to temp: {copy_tmp.name}')
+    except Exception as e:
+        print(f'[Dispatch] Could not copy save file: {e}')
+        try:
+            os.unlink(copy_tmp.name)
+        except OSError:
+            pass
+        return None
+
     tmp = tempfile.NamedTemporaryFile(suffix='.sii', delete=False)
     tmp.close()
-
     try:
         result = subprocess.run(
-            [decrypt_exe, filepath, tmp.name],
-            capture_output=True, timeout=60
+            [decrypt_exe, copy_tmp.name, tmp.name],
+            capture_output=True, timeout=120
         )
-        return tmp.name if result.returncode == 0 else None
+        if result.returncode != 0:
+            stderr = result.stderr.decode('utf-8', errors='replace').strip()
+            print(f'[Dispatch] Decryption failed (rc={result.returncode}): {stderr}')
+            return None
+        return tmp.name
     except Exception as e:
         print(f'[Dispatch] Decryption error: {e}')
         return None
+    finally:
+        try:
+            os.unlink(copy_tmp.name)
+        except OSError:
+            pass
 
 
 # ── Data push ─────────────────────────────────────────────────────
@@ -211,8 +234,11 @@ class SaveWatcher(FileSystemEventHandler):
         self.last_push = 0
 
     def on_modified(self, event):
-        if not event.is_directory and event.src_path.endswith('game.sii'):
+        if event.is_directory:
+            return
+        if event.src_path.endswith('game.sii'):
             now = time.time()
+            print(f'[Dispatch] FS event: game.sii modified at {event.src_path}')
             if now - self.last_push > 30:
                 self.last_push = now
                 freshest = find_save_file()
@@ -220,6 +246,15 @@ class SaveWatcher(FileSystemEventHandler):
                     slot = os.path.basename(os.path.dirname(freshest))
                     print(f'[Dispatch] Save change detected — using freshest slot={slot!r}')
                     push_data(freshest)
+                else:
+                    print('[Dispatch] FS event fired but find_save_file() returned None')
+            else:
+                print(f'[Dispatch] FS event throttled (last push {now - self.last_push:.0f}s ago)')
+        else:
+            # Log non-game.sii events at low verbosity so we can confirm watchdog is firing
+            fname = os.path.basename(event.src_path)
+            if fname not in ('info.sii',):  # skip noisy metadata files
+                print(f'[Dispatch] FS event (ignored): {fname}')
 
 
 def start_watcher(save_root: str):

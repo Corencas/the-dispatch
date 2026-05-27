@@ -44,10 +44,13 @@ def start_overlay(overlay_state):
             user32 = ctypes.windll.user32
 
             # 1. Get screen dimensions and compute position before creating the window
+            # SM_CXSCREEN (0) returns the PRIMARY monitor width, but clamp anyway
+            # in case of a multi-monitor setup where GetSystemMetrics returns the
+            # combined virtual desktop width instead.
             screen_w = user32.GetSystemMetrics(0)
-            screen_h = user32.GetSystemMetrics(1)
-            x = screen_w - OVERLAY_W - 10
+            x = min(screen_w - OVERLAY_W - 10, 1920 - OVERLAY_W - 10)
             y = 10
+            print(f"[Overlay] screen_w={screen_w}, placing at x={x}", flush=True)
 
             # Hint SDL to place the window at the right position on creation
             os.environ['SDL_VIDEO_WINDOW_POS'] = f'{x},{y}'
@@ -86,15 +89,17 @@ def start_overlay(overlay_state):
             user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, OVERLAY_W, OVERLAY_H, 0x0040)  # SWP_SHOWWINDOW
             print(f"[Overlay] positioned at x={x} y={y} ({OVERLAY_W}x{OVERLAY_H}), entering render loop", flush=True)
 
+            # Block QUIT events — the overlay is a daemon thread and dies with
+            # the main process; we never want a spurious QUIT (e.g. from ATS
+            # stealing focus) to kill the render loop.
+            pygame.event.set_blocked(pygame.QUIT)
+
             font_big = pygame.font.SysFont("Arial", 16, bold=True)
             font_small = pygame.font.SysFont("Arial", 13)
             clock = pygame.time.Clock()
 
             while True:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        print("[Overlay] QUIT event received — exiting", flush=True)
-                        return
+                pygame.event.pump()  # keep SDL event queue healthy without processing QUIT
 
                 screen.fill((1, 1, 1))  # colorkey — rendered transparent
 

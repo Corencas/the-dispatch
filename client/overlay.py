@@ -27,9 +27,11 @@ from dataclasses import dataclass, field
 
 try:
     import game_overlay_sdk.injector as injector
-    SDK_OK = True
-except ImportError:
-    SDK_OK = False
+    OVERLAY_SDK_AVAILABLE = True
+except Exception as e:
+    OVERLAY_SDK_AVAILABLE = False
+    print(f"[Overlay] game-overlay-sdk import failed: {e}")
+    print(f"[Overlay] overlay disabled.")
 
 log = logging.getLogger('overlay')
 
@@ -126,7 +128,7 @@ def _run(ov: OverlayState):
       TARGET_PROCESS_IS_NOT_CREATED_ERROR  →  game not launched yet, wait and retry
       TARGET_PROCESS_WAS_TERMINATED_ERROR  →  game exited, stop the thread
     """
-    if not SDK_OK:
+    if not OVERLAY_SDK_AVAILABLE:
         print(
             "[Overlay] game-overlay-sdk not installed — overlay disabled.\n"
             "          pip install game-overlay-sdk",
@@ -207,7 +209,7 @@ def start_overlay(ov: OverlayState = None):
       - Process running as Administrator
       - ATS launched AFTER this function is called
     """
-    if not SDK_OK:
+    if not OVERLAY_SDK_AVAILABLE:
         print(
             "[Overlay] game-overlay-sdk not installed — overlay disabled.\n"
             "          pip install game-overlay-sdk",

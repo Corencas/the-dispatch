@@ -857,8 +857,8 @@ def _process_voice_input(wav_path: str):
         # Push transcript to overlay
         try:
             from overlay import overlay_state
-            overlay_state.last_transcript = text
-            overlay_state.transcript_time = time.monotonic()
+            overlay_state["last_transcript"] = text
+            overlay_state["transcript_time"] = time.monotonic()
         except Exception:
             pass
 
@@ -897,11 +897,11 @@ def _process_voice_input(wav_path: str):
         # Push AI response to overlay (subtitle + history)
         try:
             from overlay import overlay_state
-            overlay_state.last_response  = response
-            overlay_state.response_time  = time.monotonic()
-            overlay_state.history.append({"role": "user",      "text": text})
-            overlay_state.history.append({"role": "assistant", "text": response})
-            overlay_state.history = overlay_state.history[-20:]   # keep last 10 turns
+            overlay_state["last_response"]  = response
+            overlay_state["response_time"]  = time.monotonic()
+            overlay_state["history"].append({"role": "user",      "text": text})
+            overlay_state["history"].append({"role": "assistant", "text": response})
+            overlay_state["history"] = overlay_state["history"][-20:]  # keep last 10 turns
         except Exception:
             pass
 
@@ -1007,7 +1007,7 @@ def _ptt_loop():
                 # Notify overlay
                 try:
                     from overlay import overlay_state
-                    overlay_state.recording = True
+                    overlay_state["recording"] = True
                 except Exception:
                     pass
 
@@ -1025,7 +1025,7 @@ def _ptt_loop():
                 # Notify overlay — recording stopped
                 try:
                     from overlay import overlay_state
-                    overlay_state.recording = False
+                    overlay_state["recording"] = False
                 except Exception:
                     pass
 

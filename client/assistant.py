@@ -424,23 +424,31 @@ def build_context_summary(snapshot: dict) -> str:
 
     trailer_attached = bool(trailer.get("id"))
 
-    # ── Active job detection — use player.in_job, NOT trailer.active_destination
-    # active_destination persists after job completion and cannot be trusted.
-    player_in_job = player.get("in_job")  # True / False / None (field absent)
+    # ── Active job detection ──────────────────────────────────────────────────
+    # Primary:  player.in_job parsed from save (True/False/None).
+    # Fallback: if in_job is missing/False but job_info_cargo is populated,
+    #           that is definitive proof of an active job.
+    # Never use trailer.active_destination — it persists after job completion.
+    player_in_job  = player.get("in_job")           # True / False
+    job_info_cargo = (player.get("job_info_cargo") or "").strip()
+
     if player_in_job is True:
         has_active_job = True
-    elif player_in_job is False:
-        has_active_job = False
+        log.info(f"ACTIVE JOB DETECTION: player.in_job=True -> has_active_job=True")
+    elif job_info_cargo and job_info_cargo not in ("null", "nil"):
+        has_active_job = True
+        log.info(
+            f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r} but "
+            f"job_info_cargo={job_info_cargo!r} is set -> has_active_job=True (fallback)"
+        )
     else:
-        # in_job field not found in save — fall back conservatively to False
-        # (never suppress job listings when we're uncertain)
         has_active_job = False
+        log.info(
+            f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r}, "
+            f"job_info_cargo empty -> has_active_job=False"
+        )
 
-    log.info(
-        f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r} "
-        f"trailer.active_destination={active_destination!r} (ignored for job detection) "
-        f"-> has_active_job={has_active_job}"
-    )
+    log.info(f"trailer.active_destination={active_destination!r} (ignored for job detection)")
 
     ctx["trailer_attached"]   = trailer_attached
     ctx["trailer_cargo_type"] = trailer_cargo_type or None
@@ -477,27 +485,28 @@ def build_context_summary(snapshot: dict) -> str:
 
     # ── Job source logic ──────────────────────────────────────────────────────
     if has_active_job:
-        # Driver is on an active job — surface current run details; still show
-        # matching freight jobs for planning ahead.
-        dest_parts = active_destination.split(".") if active_destination else []
+        # Build current job context from player.job_info_* fields (reliable).
+        job_cargo_raw = player.get("job_info_cargo") or active_cargo or "unknown"
+        job_target    = player.get("job_info_target") or active_destination or ""
+        job_dist_km   = int(player.get("job_info_planned_distance_km") or 0)
+        job_urgency   = player.get("job_info_urgency", "0") or "0"
+
+        dest_parts = job_target.split(".") if job_target else []
         dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else "unknown"
         company    = dest_parts[1].replace("_", " ").title() if len(dest_parts) > 1 else ""
 
         ctx["current_job"] = {
-            "cargo":           trailer_cargo_type or active_cargo or "unknown",
-            "destination":     dest_city,
-            "company":         company,
-            "raw_destination": active_destination,
+            "cargo":          job_cargo_raw,
+            "destination":    dest_city,
+            "company":        company,
+            "distance_miles": round(job_dist_km * 0.621371),
+            "urgency":        job_urgency,
         }
-        ctx["job_status"] = (
-            "ACTIVE_LOAD: Driver already has an active load. "
-            "If asked about available jobs, briefly note they're already loaded, "
-            "then list the options below."
-        )
-        candidates = _filter_by_body_type(freight_market, trailer_body_type)
+        ctx["job_status"] = "ACTIVE_LOAD: Driver is on an active job. Do not list new jobs."
+        candidates = []   # suppress — driver already has a load
         log.info(
-            f"Job source: active load (player.in_job=True) -> dest={dest_city!r}, "
-            f"body_type={trailer_body_type!r}, fm_matches={len(candidates)}"
+            f"Job source: active job -> cargo={job_cargo_raw!r}, dest={dest_city!r}, "
+            f"{round(job_dist_km * 0.621371)} mi"
         )
 
     elif trailer_attached and trailer_body_type:
@@ -535,18 +544,24 @@ def build_context_summary(snapshot: dict) -> str:
     )[:10]
 
     ctx["units"] = "miles, USD"
-    ctx["top_freight_jobs"] = [
-        {
-            "cargo":              j.get("cargo", "unknown"),
-            "source":             j.get("source_city", "?"),
-            "destination":        j.get("destination_city", "?"),
-            "income":             j.get("revenue", 0),
-            "distance":           round(int(j.get("distance_km", 0)) * 0.621371),
-            "market":             j.get("market", "unknown"),
-            "trailer_cargo_type": j.get("trailer_cargo_type"),   # cargo_market jobs only
-        }
-        for j in top_jobs
-    ]
+
+    # When actively on a job, candidates is already [] so top_jobs is [] too.
+    # Be explicit so Claude sees an empty list and knows not to list new runs.
+    if has_active_job:
+        ctx["top_freight_jobs"] = []
+    else:
+        ctx["top_freight_jobs"] = [
+            {
+                "cargo":              j.get("cargo", "unknown"),
+                "source":             j.get("source_city", "?"),
+                "destination":        j.get("destination_city", "?"),
+                "income":             j.get("revenue", 0),
+                "distance":           round(int(j.get("distance_km", 0)) * 0.621371),
+                "market":             j.get("market", "unknown"),
+                "trailer_cargo_type": j.get("trailer_cargo_type"),
+            }
+            for j in top_jobs
+        ]
 
     ctx["drivers"] = [
         {"name": d.get("name"), "city": d.get("city"), "status": d.get("status")}

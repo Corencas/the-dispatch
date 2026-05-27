@@ -20,6 +20,17 @@ import pygame
 OVERLAY_W = 600
 OVERLAY_H = 80
 
+# Module-level shared state dict — written by assistant.py, read by the render loop.
+overlay_state: dict = {
+    "recording":       False,
+    "last_transcript": "",
+    "transcript_time": 0.0,
+    "last_response":   "",
+    "response_time":   0.0,
+    "current_job":     None,
+    "history":         [],
+}
+
 
 def start_overlay(overlay_state):
     def _run():

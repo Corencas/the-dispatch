@@ -51,12 +51,21 @@ def start_overlay(overlay_state):
         HWND_TOPMOST = -1
         user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, OVERLAY_W, OVERLAY_H, SWP_SHOWWINDOW)
 
-        # Set layered window style first
-        GWL_EXSTYLE = -20
-        WS_EX_LAYERED = 0x80000
-        WS_EX_TOPMOST = 0x8
+        # Set extended window styles:
+        #   WS_EX_LAYERED   — required for colorkey/alpha transparency
+        #   WS_EX_TOPMOST   — always on top
+        #   WS_EX_NOACTIVATE — never steals or loses focus when other windows are clicked
+        #   WS_EX_TOOLWINDOW — hides from taskbar / Alt+Tab
+        GWL_EXSTYLE      = -20
+        WS_EX_LAYERED    = 0x00080000
+        WS_EX_TOPMOST    = 0x00000008
+        WS_EX_NOACTIVATE = 0x08000000
+        WS_EX_TOOLWINDOW = 0x00000080
         style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TOPMOST)
+        ctypes.windll.user32.SetWindowLongW(
+            hwnd, GWL_EXSTYLE,
+            style | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+        )
 
         # Set transparency using colorkey (RGB packed as int: R + G*256 + B*65536)
         colorkey = (1, 1, 1)
@@ -108,8 +117,11 @@ def start_overlay(overlay_state):
 
             pygame.display.flip()
 
-            # Re-assert topmost every frame
-            user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, OVERLAY_W, OVERLAY_H, SWP_SHOWWINDOW)
+            # Re-assert HWND_TOPMOST every frame without moving, resizing, or activating
+            SWP_NOMOVE     = 0x0002
+            SWP_NOSIZE     = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
 
             clock.tick(30)
 

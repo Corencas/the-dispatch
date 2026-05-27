@@ -429,26 +429,18 @@ def build_context_summary(snapshot: dict) -> str:
     # Fallback: if in_job is missing/False but job_info_cargo is populated,
     #           that is definitive proof of an active job.
     # Never use trailer.active_destination — it persists after job completion.
-    player_in_job  = player.get("in_job")           # True / False
-    job_info_cargo = (player.get("job_info_cargo") or "").strip()
+    # player.in_job is the ONLY source of truth for active job status.
+    # job_info_cargo and trailer.active_destination persist after job completion
+    # and must not be used as fallbacks.
+    player_in_job = player.get("in_job")   # True or False (parser returns False if absent)
+    has_active_job = player_in_job is True
 
-    if player_in_job is True:
-        has_active_job = True
-        log.info(f"ACTIVE JOB DETECTION: player.in_job=True -> has_active_job=True")
-    elif job_info_cargo and job_info_cargo not in ("null", "nil"):
-        has_active_job = True
-        log.info(
-            f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r} but "
-            f"job_info_cargo={job_info_cargo!r} is set -> has_active_job=True (fallback)"
-        )
-    else:
-        has_active_job = False
-        log.info(
-            f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r}, "
-            f"job_info_cargo empty -> has_active_job=False"
-        )
-
-    log.info(f"trailer.active_destination={active_destination!r} (ignored for job detection)")
+    log.info(
+        f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r} "
+        f"-> has_active_job={has_active_job} "
+        f"(trailer.active_destination={active_destination!r} ignored, "
+        f"job_info_cargo={player.get('job_info_cargo')!r} ignored)"
+    )
 
     ctx["trailer_attached"]   = trailer_attached
     ctx["trailer_cargo_type"] = trailer_cargo_type or None
@@ -699,6 +691,11 @@ def _parse_pref_command(text: str, prefs: dict) -> tuple[dict, str | None]:
 
 tts_queue: queue.Queue = queue.Queue()
 
+# Set to True once the session-start briefing has fully finished playing.
+# PTT pipeline processing is blocked until then so the briefing never races
+# with an early PTT press.
+_startup_complete: bool = False
+
 
 def speak(text: str, prefs: dict | None = None):
     """Enqueue text for TTS — never interrupts current speech."""
@@ -813,6 +810,14 @@ def _process_voice_input(wav_path: str):
     """
     if not wav_path:
         log.warning("Pipeline: wav_path is None/empty — nothing to process")
+        return
+
+    if not _startup_complete:
+        log.info("Pipeline: startup briefing not yet complete — dropping PTT input")
+        try:
+            os.unlink(wav_path)
+        except OSError:
+            pass
         return
 
     try:
@@ -1182,11 +1187,14 @@ def _brief_job_complete(snap: dict, market: list, prefs: dict, new_count: int = 
 
 def _session_start_briefing():
     """Morning briefing delivered once, 6 seconds after startup (gives snapshot time to load)."""
+    global _startup_complete
     time.sleep(6)
 
     tel, snap, market, _, _ = state.read()
     if not snap:
         log.info("No snapshot yet — skipping session briefing")
+        _startup_complete = True   # no briefing to wait for — open PTT gate now
+        log.info("Startup gate opened (no snapshot)")
         return
 
     prefs = load_prefs()
@@ -1215,6 +1223,13 @@ def _session_start_briefing():
     _append_history('[auto: session start]', msg)
     state.set_briefing_now()
     state._session_briefed = True
+
+    # Block until the briefing has fully played, then open the PTT gate.
+    # tts_queue.join() returns only after task_done() is called for every
+    # item currently in the queue — at startup that's exactly this briefing.
+    tts_queue.join()
+    _startup_complete = True
+    log.info("Startup briefing complete — PTT now active")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

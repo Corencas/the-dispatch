@@ -332,11 +332,13 @@ def _show_status(icon, item):
         print(f'[Dispatch] {_status["text"]} | Last push: {last}')
 
 
-def _make_menu(observer_ref):
+def _make_menu(observer_ref, qt_app=None):
     def on_quit(icon, item):
         if observer_ref.get('obs'):
             observer_ref['obs'].stop()
         icon.stop()
+        if qt_app is not None:
+            qt_app.quit()
 
     return pystray.Menu(
         pystray.MenuItem('Open Dashboard', _open_dashboard),
@@ -449,6 +451,23 @@ def run_auth_flow():
 def main():
     global DISCORD_TOKEN, DISCORD_ID, DISCORD_USERNAME
 
+    # ── QApplication MUST be created in the main thread before anything else ───
+    # Qt forbids creating QApplication outside the main thread; doing so raises
+    # "WARNING: QApplication was not created in the main() thread."
+    # pystray is moved to a daemon thread so Qt can own the main event loop.
+    _qt_app = None
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt
+        _qt_app = QApplication.instance() or QApplication(sys.argv)
+        _qt_app.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
+        _qt_app.setQuitOnLastWindowClosed(False)   # tray icon keeps the process alive
+        print('[Dispatch] QApplication created in main thread')
+    except ImportError:
+        print('[Dispatch] PyQt6 not installed — overlay disabled')
+    except Exception as _qt_err:
+        print(f'[Dispatch] Qt init error — overlay disabled: {_qt_err}')
+
     if not DISCORD_TOKEN or DISCORD_TOKEN in ('', 'your_discord_token_here'):
         result = run_auth_flow()
         if not result:
@@ -488,31 +507,38 @@ def main():
     print(f'[Dispatch] Starting as {DISCORD_USERNAME}')
     _set_status(f'Watching — {DISCORD_USERNAME}')
 
-    # Start telemetry, assistant, and do an immediate push of the freshest save
+    # Background services — each gets its own thread
     start_telemetry_loop()
     assistant.start()
-
-    # Launch the in-game HUD overlay (no-op if PyQt6 is not installed)
-    try:
-        from overlay import start_overlay
-        start_overlay()
-    except Exception as _ov_err:
-        print(f'[Dispatch] Overlay failed to start: {_ov_err}')
-
     threading.Thread(target=push_data, args=(filepath,), daemon=True).start()
 
     observer = start_watcher(save_root)
     observer_ref = {'obs': observer}
+    threading.Thread(target=observer.join, daemon=True).start()
 
+    # Overlay — create widget in the main thread (QApplication is already live)
+    if _qt_app is not None:
+        try:
+            from overlay import start_overlay
+            start_overlay()   # creates + shows DispatchOverlay; no thread, no exec()
+        except Exception as _ov_err:
+            print(f'[Dispatch] Overlay failed to start: {_ov_err}')
+
+    # Tray icon
     icon = pystray.Icon(
         'The Dispatch',
         _create_tray_icon(),
         f'The Dispatch — {DISCORD_USERNAME}',
-        menu=_make_menu(observer_ref),
+        menu=_make_menu(observer_ref, qt_app=_qt_app),
     )
 
-    threading.Thread(target=observer.join, daemon=True).start()
-    icon.run()
+    if _qt_app is not None:
+        # Qt owns the main thread event loop — pystray runs in a daemon thread
+        threading.Thread(target=icon.run, daemon=True, name='tray-icon').start()
+        sys.exit(_qt_app.exec())
+    else:
+        # No Qt — pystray blocks the main thread (original behaviour)
+        icon.run()
 
 
 if __name__ == '__main__':

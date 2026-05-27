@@ -1,7 +1,9 @@
 """
 overlay.py — Transparent always-on-top HUD for The Dispatch.
 
-Spawned as a daemon thread by client.py. Uses PyQt6 for rendering.
+Created in the main thread by client.py after QApplication is initialised.
+Qt requires that QApplication and all widgets live on the main thread;
+the event loop (app.exec()) is also run there.
 
 Behaviour:
   - Fully click-through by default (WS_EX_TRANSPARENT) so ATS/ETS2
@@ -15,9 +17,7 @@ Shared state is written by assistant.py via the overlay_state object
 and read here via a 500 ms QTimer.
 """
 
-import sys
 import time
-import threading
 from dataclasses import dataclass, field
 
 try:
@@ -500,9 +500,15 @@ class DispatchOverlay(QWidget):
 
 def start_overlay():
     """
-    Launch the overlay in a daemon thread.
-    Call this from client.py after assistant.start().
-    Returns immediately; the overlay runs independently.
+    Create and show the overlay widget in the calling thread.
+
+    IMPORTANT: must be called from the main thread AFTER QApplication has been
+    created (client.py does this at the very top of main()).  Qt forbids creating
+    widgets outside the main thread.  There is no internal threading here — the
+    caller owns the event loop (app.exec() in client.py's main()).
+
+    Returns the DispatchOverlay instance; keep the reference alive so GC does
+    not destroy the window.
     """
     if not PYQT6_OK:
         print(
@@ -512,16 +518,7 @@ def start_overlay():
         )
         return None
 
-    def _run():
-        # QApplication must be created before any QWidget.
-        # Running in a secondary thread is not officially supported by Qt but
-        # works reliably on Windows (where pystray owns the main thread).
-        app = QApplication.instance() or QApplication(sys.argv)
-        app.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings)
-        window = DispatchOverlay()
-        window.show()
-        app.exec()
-
-    t = threading.Thread(target=_run, daemon=True, name="overlay-qt")
-    t.start()
-    return t
+    window = DispatchOverlay()
+    window.show()
+    print("[Overlay] DispatchOverlay created in main thread", flush=True)
+    return window

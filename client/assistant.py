@@ -401,7 +401,15 @@ def build_context_summary(snapshot: dict) -> str:
     ctx: dict = {}
     ctx["money"] = snapshot.get("finances", {}).get("money", "unknown")
 
-    # ── Trailer extraction ────────────────────────────────────────────────────
+    # ── Diagnostic: log all candidate active-job fields ───────────────────────
+    player = snapshot.get("player", {}) or {}
+    log.info(f"SNAP_PLAYER (full): {player!r}")
+    log.info(f"SNAP top-level current_job={snapshot.get('current_job')!r}")
+    log.info(f"SNAP top-level job_status={snapshot.get('job_status')!r}")
+    log.info(f"SNAP top-level active_job={snapshot.get('active_job')!r}")
+    log.info(f"SNAP top-level in_job={snapshot.get('in_job')!r}")
+
+    # ── Trailer extraction (for cargo context only, NOT job detection) ────────
     trailer = snapshot.get("trailer", {}) or {}
     log.info(f"SNAP_TRAILER: {trailer!r}")
 
@@ -414,17 +422,29 @@ def build_context_summary(snapshot: dict) -> str:
         parts = active_cargo.split(".", 1)
         trailer_cargo_type = parts[1] if len(parts) > 1 else active_cargo
 
-    trailer_attached = bool(trailer)
-    has_active_job   = bool(active_destination)
+    trailer_attached = bool(trailer.get("id"))
+
+    # ── Active job detection — use player.in_job, NOT trailer.active_destination
+    # active_destination persists after job completion and cannot be trusted.
+    player_in_job = player.get("in_job")  # True / False / None (field absent)
+    if player_in_job is True:
+        has_active_job = True
+    elif player_in_job is False:
+        has_active_job = False
+    else:
+        # in_job field not found in save — fall back conservatively to False
+        # (never suppress job listings when we're uncertain)
+        has_active_job = False
+
+    log.info(
+        f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r} "
+        f"trailer.active_destination={active_destination!r} (ignored for job detection) "
+        f"-> has_active_job={has_active_job}"
+    )
 
     ctx["trailer_attached"]   = trailer_attached
     ctx["trailer_cargo_type"] = trailer_cargo_type or None
     ctx["has_active_job"]     = has_active_job
-
-    log.info(
-        f"TRAILER STATE — attached={trailer_attached}, "
-        f"cargo_type={trailer_cargo_type!r}, has_active_job={has_active_job}"
-    )
 
     # ── Raw data ──────────────────────────────────────────────────────────────
     freight_market = snapshot.get("freight_market", [])
@@ -437,7 +457,7 @@ def build_context_summary(snapshot: dict) -> str:
     if not isinstance(owned_trailers, list):
         owned_trailers = []
 
-    trailer_body_type = snapshot.get("trailer", {}).get("body_type")  # current trailer type
+    trailer_body_type = trailer.get("body_type")  # current trailer type
 
     log.info(f"SNAP_FM_RAW[:1]: {freight_market[:1]!r}")
     log.info(f"SNAP_OWNED_TRAILERS: {owned_trailers!r}")
@@ -457,13 +477,14 @@ def build_context_summary(snapshot: dict) -> str:
 
     # ── Job source logic ──────────────────────────────────────────────────────
     if has_active_job:
-        # Driver is loaded — surface current run; still show matching jobs for planning ahead
-        dest_parts = active_destination.split(".")
-        dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else active_destination
+        # Driver is on an active job — surface current run details; still show
+        # matching freight jobs for planning ahead.
+        dest_parts = active_destination.split(".") if active_destination else []
+        dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else "unknown"
         company    = dest_parts[1].replace("_", " ").title() if len(dest_parts) > 1 else ""
 
         ctx["current_job"] = {
-            "cargo":           trailer_cargo_type or active_cargo,
+            "cargo":           trailer_cargo_type or active_cargo or "unknown",
             "destination":     dest_city,
             "company":         company,
             "raw_destination": active_destination,
@@ -475,7 +496,7 @@ def build_context_summary(snapshot: dict) -> str:
         )
         candidates = _filter_by_body_type(freight_market, trailer_body_type)
         log.info(
-            f"Job source: active load → dest={dest_city!r}, "
+            f"Job source: active load (player.in_job=True) -> dest={dest_city!r}, "
             f"body_type={trailer_body_type!r}, fm_matches={len(candidates)}"
         )
 
@@ -492,7 +513,7 @@ def build_context_summary(snapshot: dict) -> str:
         # No trailer (or unknown type) → full freight market
         ctx["current_job"] = None
         candidates = freight_market
-        log.info(f"Job source: no trailer → freight_market ({len(freight_market)} offers)")
+        log.info(f"Job source: no trailer/body_type → freight_market ({len(freight_market)} offers)")
 
     # Expose owned trailer types so Claude can answer "what can I take with my flatbed?"
     if owned_trailers:

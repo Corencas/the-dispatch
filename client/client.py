@@ -491,6 +491,14 @@ def main():
     # Start telemetry, assistant, and do an immediate push of the freshest save
     start_telemetry_loop()
     assistant.start()
+
+    # Launch the in-game HUD overlay (no-op if PyQt6 is not installed)
+    try:
+        from overlay import start_overlay
+        start_overlay()
+    except Exception as _ov_err:
+        print(f'[Dispatch] Overlay failed to start: {_ov_err}')
+
     threading.Thread(target=push_data, args=(filepath,), daemon=True).start()
 
     observer = start_watcher(save_root)

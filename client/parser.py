@@ -1,16 +1,93 @@
 import re
 
+# ── Trailer body-type helpers ─────────────────────────────────────────────────
+
+# Keywords to look for in a job's trailer_definition string to match a body_type.
+# Values are lists; any match counts.
+_BODY_TYPE_KEYWORDS: dict[str, list[str]] = {
+    'rogerspm2':    ['rogers.pm'],
+    'rogersflip':   ['rogers.4axleflip', 'rogersflip', 'rogers.flip'],
+    'lowboy':       ['lowboy'],
+    'flatbed':      ['flatbed', 'fontaine', 'manac.flatbed'],
+    'dropdeck':     ['dropdeck'],
+    'log':          ['.log.', 'manac.log', '_log_'],
+    'refrigerated': ['reefer', 'utility.2000', 'refriger'],
+    'hopper':       ['hopper'],
+    'horse':        ['horse'],
+    'chaul':        ['chaul'],
+}
+
+# Human-readable label for each body_type (shown to Claude)
+BODY_TYPE_LABELS: dict[str, str] = {
+    'rogerspm2':    'Rogers PM heavy-haul',
+    'rogersflip':   'Rogers flip-axle heavy-haul',
+    'lowboy':       'Lowboy heavy-equipment',
+    'flatbed':      'Flatbed',
+    'dropdeck':     'Drop-deck',
+    'log':          'Logging',
+    'refrigerated': 'Reefer',
+    'hopper':       'Hopper',
+    'horse':        'Horse trailer',
+    'chaul':        'Chassis hauler',
+}
+
+
+def _def_str_to_body_type(s: str) -> str | None:
+    """Infer body_type from a named trailer_definition string."""
+    d = s.lower()
+    if 'rogers.pm' in d:                        return 'rogerspm2'
+    if 'rogersflip' in d or 'rogers.4axle' in d: return 'rogersflip'
+    if 'lowboy' in d:                            return 'lowboy'
+    if 'dropdeck' in d:                          return 'dropdeck'
+    if 'flatbed' in d or 'fontaine' in d or 'manac.flatbed' in d: return 'flatbed'
+    if '.log.' in d or 'manac.log' in d:         return 'log'
+    if 'reefer' in d or 'utility' in d or 'refriger' in d: return 'refrigerated'
+    if 'hopper' in d:                            return 'hopper'
+    if 'horse' in d:                             return 'horse'
+    if 'chaul' in d:                             return 'chaul'
+    return None
+
+
+def _parse_def_body_types(content: str) -> dict[str, str]:
+    """
+    Build a map: nameless def ID → body_type string.
+    Trailer def blocks are flat (no nested braces) so [^}] works fine.
+    """
+    result: dict[str, str] = {}
+    pat = re.compile(r':\s*(_nameless\.\S+)\s*\{([^}]{0,800})\}', re.DOTALL)
+    for m in pat.finditer(content):
+        bt_m = re.search(r'\bbody_type\s*:\s*(\w+)', m.group(2))
+        if bt_m:
+            result[m.group(1)] = bt_m.group(1)
+    return result
+
+
+def job_matches_body_type(trailer_def_str: str, body_type: str) -> bool:
+    """Return True if a job's trailer_definition string is compatible with body_type."""
+    if not trailer_def_str or not body_type:
+        return False
+    d = trailer_def_str.lower()
+    return any(kw in d for kw in _BODY_TYPE_KEYWORDS.get(body_type, [body_type.lower()]))
+
+
+# ── Top-level parser ──────────────────────────────────────────────────────────
+
 def parse_sii(filepath):
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
+
+    owned_trailers = parse_owned_trailers(content)
 
     result = {
         'finances':       parse_finances(content),
         'player':         parse_player(content),
         'drivers':        parse_drivers(content),
-        'jobs':           parse_jobs(content),
-        'freight_market': [],
-        'trailer':        parse_trailer(content),
+        'jobs':           parse_jobs(content),         # completed job history
+        'freight_market': [],                           # populated by client.py via parse_freight_market()
+        'trailer':        parse_trailer(content, owned_trailers),  # currently attached trailer + body_type
+        'owned_trailers': [{'body_type': t['body_type'],
+                            'label':     BODY_TYPE_LABELS.get(t['body_type'], t['body_type'])}
+                           for t in owned_trailers if t['body_type']],
     }
 
     return result
@@ -45,32 +122,91 @@ def parse_finances(content):
     return finances
 
 
-def parse_trailer(content):
-    """Extract current trailer type and active cargo from the save file."""
-    trailer = {}
+def parse_trailer(content, owned_trailers: list | None = None):
+    """
+    Extract current trailer info and body_type from the save file.
 
-    # Trailer reference in the economy block
-    my_trailer_m = re.search(r'\bmy_trailer\s*:\s*(\S+)', content)
+    owned_trailers — pre-parsed list from parse_owned_trailers(); if supplied,
+    the current trailer's body_type is looked up from it.
+    """
+    trailer: dict = {}
+
+    # Currently assigned trailer ID (from economy block)
+    my_trailer_m = re.search(r'\b(?:my_trailer|assigned_trailer)\s*:\s*(\S+)', content)
     trailer['id'] = my_trailer_m.group(1) if my_trailer_m else None
 
     # Active job cargo / destination from job_info block
     job_info_m = re.search(r'job_info\s*:.*?\{([^}]*)\}', content, re.DOTALL)
     if job_info_m:
-        block = job_info_m.group(1)
+        block    = job_info_m.group(1)
         cargo_m  = re.search(r'\bcargo\s*:\s*"?([^"\n]+)"?', block)
         target_m = re.search(r'target(?:_company)?\s*:\s*"?([^"\n]+)"?', block)
-        trailer['active_cargo']       = cargo_m.group(1).strip() if cargo_m else None
+        trailer['active_cargo']       = cargo_m.group(1).strip()  if cargo_m  else None
         trailer['active_destination'] = target_m.group(1).strip() if target_m else None
 
-    # Trailer definition type (e.g. "trailer.flatbed", "trailer.curtain")
-    trailer_def_m = re.search(
-        r'\btrailer\b\s*:\s*trailer\.\S+\s*\{([^}]*)\}', content, re.DOTALL
-    )
-    if trailer_def_m:
-        td_m = re.search(r'\btrailer_def\s*:\s*"?([^"\n]+)"?', trailer_def_m.group(1))
-        trailer['type'] = td_m.group(1).strip() if td_m else None
+    # Resolve body_type from owned_trailers if available
+    if owned_trailers and trailer.get('id'):
+        cur_id = trailer['id']
+        match  = next((t for t in owned_trailers if t['trailer_id'] == cur_id), None)
+        trailer['body_type'] = match['body_type'] if match else None
+    else:
+        trailer['body_type'] = None
 
     return trailer
+
+
+def parse_owned_trailers(content: str) -> list[dict]:
+    """
+    Return a list of {trailer_id, def_id, body_type} for every owned trailer.
+
+    ATS save format:
+        trailer : _nameless.xxx {
+            trailer_definition: _nameless.yyy   ← points to a flat def block
+            ...                                   (may have nested {}, so we only
+        }                                          scan the first 500 chars)
+
+    The def block (usually a flat nameless block) contains:
+        body_type: lowboy   ← this is what we want
+
+    For direct named def strings (e.g. trailer_def.scs.lowboy.triple_2_2_2.wood)
+    we infer the body_type from the string itself.
+    """
+    import logging
+    _log = logging.getLogger('parser')
+
+    # Build map: nameless def ID → body_type (from flat def blocks)
+    def_body_map = _parse_def_body_types(content)
+
+    trailers: list[dict] = []
+    header_pat = re.compile(r'^trailer\s*:\s*(_nameless\.\S+)\s*\{', re.M)
+
+    for m in header_pat.finditer(content):
+        trailer_id = m.group(1)
+        # Scan only first 500 chars after the opening brace to get trailer_definition
+        # before any nested sub-blocks appear
+        snippet = content[m.end(): m.end() + 500]
+        td_m = re.search(r'trailer_definition\s*:\s*(\S+)', snippet)
+        if not td_m:
+            continue
+        def_id = td_m.group(1).strip()
+        if def_id in ('null', 'nil', ''):
+            continue
+
+        if def_id.startswith('_nameless'):
+            body_type = def_body_map.get(def_id)
+        else:
+            body_type = _def_str_to_body_type(def_id)
+
+        trailers.append({
+            'trailer_id': trailer_id,
+            'def_id':     def_id,
+            'body_type':  body_type,  # may be None if unknown type
+        })
+
+    known = [t for t in trailers if t['body_type']]
+    _log.info(f"owned trailers: {len(trailers)} found, {len(known)} with known body_type "
+              f"({[t['body_type'] for t in known]})")
+    return trailers
 
 
 def parse_player(content):
@@ -277,6 +413,11 @@ def parse_freight_market(content):
 
         revenue = int(dist * 32 * (1.2 if urgency > 0 else 1.0))
 
+        # trailer_definition tells us what body type is needed for this job
+        tdef_m = re.search(r'trailer_definition\s*:\s*(\S+)', block)
+        tdef_str  = tdef_m.group(1) if tdef_m else ''
+        body_type = _def_str_to_body_type(tdef_str) if tdef_str not in ('null', 'nil', '') else None
+
         jobs.append({
             'source_city':         _clean(src_city),
             'destination_city':    _clean(dest_city),
@@ -288,6 +429,8 @@ def parse_freight_market(content):
             'urgency':             urgency,
             'expiration_time':     expiry,
             'market':              'freight_market',
+            'trailer_def':         tdef_str,    # raw def string for exact matching
+            'body_type':           body_type,   # normalised body type for filtering
         })
 
     print(f'[Parser] Freight market: {len(jobs)} current offers (from discovered companies, not expired)')

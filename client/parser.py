@@ -212,6 +212,15 @@ def parse_owned_trailers(content: str) -> list[dict]:
 def parse_player(content):
     player = {}
 
+    # Search globally for in_job — it lives inside the large economy block but
+    # that block contains many nested sub-blocks so we don't try to bound it.
+    in_job_m = re.search(r'\bin_job\s*:\s*(true|false)', content)
+    player['in_job'] = (in_job_m.group(1) == 'true') if in_job_m else None
+
+    # Economy block — grab the stats fields we care about.
+    # NOTE: the economy block is huge (contains nested blocks) so the regex may
+    # only capture the first shallow fragment; that's fine for these scalar fields
+    # which appear near the top of the block.
     economy_block = re.search(r'economy\s*:.*?\{(.*?)\n\}', content, re.DOTALL)
     if economy_block:
         block = economy_block.group(1)
@@ -221,6 +230,29 @@ def parse_player(content):
         player['experience_points'] = int(xp.group(1)) if xp else 0
         player['total_distance_km'] = int(dist.group(1)) if dist else 0
         player['game_time_minutes'] = int(game_time.group(1)) if game_time else 0
+
+    # Also surface the job_info target so assistant.py can log it for diagnosis.
+    # We intentionally do NOT use this for active-job detection — the field
+    # persists after job completion and is therefore unreliable.
+    job_info_m = re.search(r'job_info\s*:.*?\{([^}]*)\}', content, re.DOTALL)
+    if job_info_m:
+        jblock = job_info_m.group(1)
+        target_m = re.search(r'target\s*:\s*"?([^"\n]+)"?', jblock)
+        raw_target = target_m.group(1).strip() if target_m else None
+        player['job_info_target'] = (
+            raw_target if raw_target and raw_target not in ('null', 'nil', '""', '"')
+            else None
+        )
+        # Grab every top-level scalar in the job_info block for full visibility
+        for field in ('cargo', 'urgency', 'planned_distance_km', 'is_special_job',
+                      'already_paid', 'started_at', 'end_time', 'pay'):
+            fm = re.search(rf'\b{field}\s*:\s*([^\n]+)', jblock)
+            if fm:
+                val = fm.group(1).strip().strip('"')
+                if val not in ('null', 'nil', '""'):
+                    player[f'job_info_{field}'] = val
+    else:
+        player['job_info_target'] = None
 
     return player
 

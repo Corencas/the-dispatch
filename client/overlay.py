@@ -51,21 +51,19 @@ def start_overlay(overlay_state):
         HWND_TOPMOST = -1
         user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, OVERLAY_W, OVERLAY_H, SWP_SHOWWINDOW)
 
-        # Set layered window style before applying attributes
+        # Set layered window style first
         GWL_EXSTYLE = -20
         WS_EX_LAYERED = 0x80000
         WS_EX_TOPMOST = 0x8
         style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TOPMOST)
 
-        # Make window background transparent using colorkey
+        # Set transparency using colorkey (RGB packed as int: R + G*256 + B*65536)
         colorkey = (1, 1, 1)
-        ctypes.windll.user32.SetLayeredWindowAttributes(
-            hwnd,
-            ctypes.windll.gdi32.RGB(1, 1, 1),
-            200,  # alpha 0-255
-            0x00000001 | 0x00000002  # LWA_COLORKEY | LWA_ALPHA
-        )
+        colorkey_int = 1 + 1*256 + 1*65536  # RGB(1,1,1)
+        LWA_COLORKEY = 0x1
+        LWA_ALPHA = 0x2
+        ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, colorkey_int, 220, LWA_COLORKEY | LWA_ALPHA)
 
         font_big = pygame.font.SysFont("Arial", 16, bold=True)
         font_small = pygame.font.SysFont("Arial", 13)

@@ -1,524 +1,303 @@
 """
-overlay.py — Transparent always-on-top HUD for The Dispatch.
+overlay.py — pygame-based always-on-top HUD for The Dispatch.
 
-Created in the main thread by client.py after QApplication is initialised.
-Qt requires that QApplication and all widgets live on the main thread;
-the event loop (app.exec()) is also run there.
+Uses SDL/DirectX via pygame, which can render over fullscreen games on Windows.
+Windows API SetWindowPos(HWND_TOPMOST) forces z-order above exclusive fullscreen.
 
-Behaviour:
-  - Fully click-through by default (WS_EX_TRANSPARENT) so ATS/ETS2
-    receives all keyboard and mouse input uninterrupted.
-  - Hovering over the overlay removes click-through so the header
-    controls (collapse / mute) become interactive.
-  - Drag anywhere on the window to reposition.
-  - Press the collapse button (━) to shrink to just the header bar.
+NOTE: For most reliable results, run ATS in Borderless Windowed mode.
+      DirectX exclusive fullscreen owns the entire display surface; some GPU
+      drivers will still prevent any other window from rendering on top of it.
+      Borderless Window is a regular desktop window that HWND_TOPMOST can beat.
 
-Shared state is written by assistant.py via the overlay_state object
-and read here via a 500 ms QTimer.
+Thread model:
+  - start_overlay() spawns a single daemon thread "overlay-pygame".
+  - The thread creates the pygame window, then spins the draw loop at 20 FPS.
+  - overlay_state is written by assistant.py and read here — no locking needed
+    for simple attribute reads/writes on CPython.
 """
 
+import ctypes
+import threading
 import time
 from dataclasses import dataclass, field
 
 try:
-    from PyQt6.QtWidgets import (
-        QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-        QLabel, QPushButton, QFrame, QSizePolicy,
-    )
-    from PyQt6.QtCore import Qt, QTimer, QPoint
-    from PyQt6.QtGui import QPainter, QColor, QPen, QBrush
-    PYQT6_OK = True
+    import pygame
+    PYGAME_OK = True
 except ImportError:
-    PYQT6_OK = False
+    PYGAME_OK = False
 
 
 # ── Shared overlay state ──────────────────────────────────────────────────────
-# Written by assistant.py; read by the overlay's refresh timer.
+# Written by assistant.py; read by the overlay's draw loop.
 
 @dataclass
 class OverlayState:
-    recording: bool       = False
-    muted: bool           = False
-    last_transcript: str  = ""
+    recording: bool        = False
+    muted: bool            = False
+    last_transcript: str   = ""
     transcript_time: float = 0.0    # time.monotonic()
-    last_response: str    = ""
-    response_time: float  = 0.0     # time.monotonic()
-    # Clean conversation history: list of {"role": "user"|"assistant", "text": str}
-    history: list         = field(default_factory=list)
+    last_response: str     = ""
+    response_time: float   = 0.0    # time.monotonic()
+    history: list          = field(default_factory=list)
 
 overlay_state = OverlayState()
 
 
-# ── Palette ───────────────────────────────────────────────────────────────────
+# ── Layout / palette ──────────────────────────────────────────────────────────
 
-_C = {
-    "bg":       QColor(13, 15, 18, 215),
-    "panel":    QColor(20, 24, 30, 160),
-    "border":   QColor(245, 166, 35, 70),
-    "amber":    QColor(245, 166, 35),
-    "amber_lo": QColor(245, 166, 35, 100),
-    "text":     QColor(176, 184, 204),
-    "bright":   QColor(240, 243, 248),
-    "dim":      QColor(90, 100, 118),
-    "red":      QColor(255, 80, 80),
-    "green":    QColor(31, 186, 90),
-}
+W, H            = 300, 220   # window size in pixels
+FPS             = 20
+SUBTITLE_SECS   = 8.0
+TRANSCRIPT_SECS = 3.5
+PAD             = 9
 
-_SUBTITLE_SECS   = 9.0   # fade window for AI response subtitle
-_TRANSCRIPT_SECS = 3.5   # fade window for your transcript
-_WIDTH           = 295
+# COLORKEY is painted for "transparent" areas.  SetLayeredWindowAttributes with
+# LWA_COLORKEY tells Win32 to composite those pixels as fully transparent.
+COLORKEY  = (2, 2, 2)
 
-
-def _css_col(key):
-    c = _C[key]
-    return f"rgb({c.red()},{c.green()},{c.blue()})"
+C_DARK    = (13,  15,  18)
+C_AMBER   = (245, 166, 35)
+C_TEXT    = (176, 184, 204)
+C_DIM     = (90,  100, 118)
+C_BRIGHT  = (240, 243, 248)
+C_RED     = (255, 80,  80)
+C_BORDER  = (60,  65,  75)
 
 
-def _base_qss():
-    a, t, d, bg = _css_col("amber"), _css_col("text"), _css_col("dim"), "transparent"
-    return f"""
-QWidget  {{ background: {bg}; color: {t}; }}
-QLabel   {{ background: {bg}; color: {t}; font-family: Consolas, "Courier New"; font-size: 9px; }}
-QPushButton {{
-    background: rgba(245,166,35,35);
-    color: {a};
-    border: 1px solid rgba(245,166,35,70);
-    border-radius: 3px;
-    font-family: Consolas, "Courier New";
-    font-size: 8px;
-    padding: 1px 5px;
-}}
-QPushButton:hover   {{ background: rgba(245,166,35,70); }}
-QPushButton:checked {{ background: rgba(245,166,35,110); color: rgb(15,17,23); }}
-"""
+# ── Win32 helpers ─────────────────────────────────────────────────────────────
+
+def _screen_size() -> tuple:
+    u = ctypes.windll.user32
+    return u.GetSystemMetrics(0), u.GetSystemMetrics(1)
 
 
-# ── Main overlay window ───────────────────────────────────────────────────────
+def _configure_window(hwnd: int, x: int, y: int, w: int, h: int):
+    """
+    1. SetWindowPos(HWND_TOPMOST) — forces the window above all others including
+       exclusive-fullscreen DirectX apps.
+    2. SetLayeredWindowAttributes — combines:
+         LWA_COLORKEY  →  pixels painted COLORKEY become fully transparent
+         LWA_ALPHA     →  remaining pixels rendered at 88 % opacity (dark glass)
+    """
+    user32 = ctypes.windll.user32
 
-class DispatchOverlay(QWidget):
+    HWND_TOPMOST   = -1
+    SWP_SHOWWINDOW = 0x0040
+    user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW)
 
-    def __init__(self):
-        super().__init__()
-        self._collapsed  = False
-        self._drag_start = None
-        self._rec_frame  = 0
+    GWL_EXSTYLE    = -20
+    WS_EX_LAYERED  = 0x00080000
+    LWA_COLORKEY   = 0x00000001
+    LWA_ALPHA      = 0x00000002
+    WINDOW_ALPHA   = 225   # 0-255; 225 ≈ 88 % opaque — dark glass feel
 
-        self._init_window()
-        self._build_ui()
-        self._start_timers()
+    r, g, b  = COLORKEY
+    colorref = r | (g << 8) | (b << 16)
 
-    # ── Window flags & positioning ────────────────────────────────────────────
+    style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+    user32.SetLayeredWindowAttributes(hwnd, colorref, WINDOW_ALPHA,
+                                      LWA_COLORKEY | LWA_ALPHA)
 
-    def _init_window(self):
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-        self.setFixedWidth(_WIDTH)
-        self.setMouseTracking(True)
 
-        screen = QApplication.primaryScreen().geometry()
-        self.move(screen.width() - _WIDTH - 12, 12)
+# ── Text utilities ────────────────────────────────────────────────────────────
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._click_through(True)
+def _blit(surf, font, text: str, color, xy: tuple, max_w: int = 9999):
+    """Render one line, truncating with '…' if wider than max_w. Returns height."""
+    if font.size(text)[0] > max_w:
+        while text and font.size(text + '…')[0] > max_w:
+            text = text[:-1]
+        text += '…'
+    s = font.render(text, True, color)
+    surf.blit(s, xy)
+    return s.get_height()
 
-    # ── Click-through (WS_EX_TRANSPARENT) ────────────────────────────────────
 
-    def _click_through(self, enable: bool):
-        try:
-            import ctypes
-            hwnd   = int(self.winId())
-            GWL    = -20              # GWL_EXSTYLE
-            LAYER  = 0x80000          # WS_EX_LAYERED
-            THRU   = 0x20             # WS_EX_TRANSPARENT
-            style  = ctypes.windll.user32.GetWindowLongW(hwnd, GWL)
-            new    = (style | LAYER | THRU) if enable else (style & ~THRU)
-            ctypes.windll.user32.SetWindowLongW(hwnd, GWL, new)
-        except Exception:
-            pass
+def _wrap(text: str, font, max_w: int) -> list:
+    """Word-wrap text into lines no wider than max_w pixels."""
+    words, lines, cur = text.split(), [], []
+    for word in words:
+        probe = ' '.join(cur + [word])
+        if font.size(probe)[0] <= max_w:
+            cur.append(word)
+        else:
+            if cur:
+                lines.append(' '.join(cur))
+            cur = [word]
+    if cur:
+        lines.append(' '.join(cur))
+    return lines or ['']
 
-    def enterEvent(self, event):
-        self._click_through(False)
-        super().enterEvent(event)
 
-    def leaveEvent(self, event):
-        self._click_through(True)
-        super().leaveEvent(event)
+# ── Main render loop ──────────────────────────────────────────────────────────
 
-    # ── Drag to reposition ────────────────────────────────────────────────────
+def _run_overlay():
+    if not PYGAME_OK:
+        print("[Overlay] pygame not installed — overlay disabled.  pip install pygame",
+              flush=True)
+        return
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_start = event.globalPosition().toPoint() - self.pos()
+    print("[Overlay] Starting pygame overlay …", flush=True)
+    print(
+        "[Overlay] NOTE: run ATS in Borderless Windowed mode for the overlay to appear.\n"
+        "          Options → Graphics → Display Mode → Borderless Window",
+        flush=True,
+    )
 
-    def mouseMoveEvent(self, event):
-        if self._drag_start and event.buttons() == Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_start)
+    try:
+        pygame.init()
+        pygame.font.init()
+    except Exception as exc:
+        print(f"[Overlay] pygame.init() failed: {exc}", flush=True)
+        return
 
-    def mouseReleaseEvent(self, event):
-        self._drag_start = None
+    sw, sh = _screen_size()
+    ox, oy = sw - W - 12, 12   # top-right corner, 12 px from edges
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    try:
+        screen = pygame.display.set_mode((W, H), pygame.NOFRAME)
+        pygame.display.set_caption("Dispatch HUD")
+    except Exception as exc:
+        print(f"[Overlay] Display init failed: {exc}", flush=True)
+        return
 
-    def _build_ui(self):
-        self.setStyleSheet(_base_qss())
+    # Win32: force topmost + set up transparent colorkey + window alpha
+    try:
+        hwnd = pygame.display.get_wm_info()['window']
+        _configure_window(hwnd, ox, oy, W, H)
+        print(f"[Overlay] Window at ({ox},{oy}), HWND_TOPMOST + layered attrs set",
+              flush=True)
+    except Exception as exc:
+        print(f"[Overlay] Win32 setup failed: {exc}", flush=True)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+    # Fonts
+    try:
+        f_sm  = pygame.font.SysFont("Consolas", 10)
+        f_med = pygame.font.SysFont("Consolas", 11)
+        f_hdr = pygame.font.SysFont("Consolas", 11, bold=True)
+    except Exception:
+        f_sm = f_med = f_hdr = pygame.font.Font(None, 14)
 
-        # ── Header (always visible, interactive) ──────────────────────────────
-        hdr = QWidget()
-        hdr.setFixedHeight(26)
-        hdr_l = QHBoxLayout(hdr)
-        hdr_l.setContentsMargins(8, 0, 6, 0)
-        hdr_l.setSpacing(5)
+    clock     = pygame.time.Clock()
+    rec_tick  = 0
 
-        self._rec_dot  = QLabel("●")
-        self._ptt_lbl  = QLabel("[DEL]")
-        self._title    = QLabel("DISPATCH")
+    while True:
+        # Pump events — required to prevent Windows marking the process as
+        # "not responding" and to receive WM_QUIT if the window is destroyed.
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
 
-        self._rec_dot.setStyleSheet(f"color: {_css_col('dim')}; font-size: 11px;")
-        self._ptt_lbl.setStyleSheet(f"color: {_css_col('amber')}; font-size: 8px;")
-        self._title.setStyleSheet(
-            f"color: {_css_col('amber')}; font-size: 9px; "
-            f"font-weight: bold; letter-spacing: 2px;"
-        )
+        ov  = overlay_state
+        now = time.monotonic()
 
-        self._mute_btn = QPushButton("MUTE")
-        self._mute_btn.setCheckable(True)
-        self._mute_btn.setFixedSize(42, 18)
-        self._mute_btn.clicked.connect(self._on_mute)
+        # ── Background ───────────────────────────────────────────────────────
+        # Fill with COLORKEY first (all pixels = transparent via Win32 colorkey).
+        screen.fill(COLORKEY)
+        # Draw rounded dark panel — corners stay COLORKEY → transparent.
+        pygame.draw.rect(screen, C_DARK, pygame.Rect(0, 0, W, H), border_radius=8)
+        # Double amber top border
+        pygame.draw.line(screen, C_AMBER, (8, 1), (W - 8, 1), 2)
 
-        self._collapse_btn = QPushButton("━")
-        self._collapse_btn.setFixedSize(20, 18)
-        self._collapse_btn.clicked.connect(self._on_collapse)
+        y = 6
 
-        hdr_l.addWidget(self._rec_dot)
-        hdr_l.addWidget(self._ptt_lbl)
-        hdr_l.addWidget(self._title)
-        hdr_l.addStretch(1)
-        hdr_l.addWidget(self._mute_btn)
-        hdr_l.addWidget(self._collapse_btn)
-        root.addWidget(hdr)
+        # ── Header ───────────────────────────────────────────────────────────
+        rec_tick = (rec_tick + 1) % FPS
+        if ov.recording:
+            dot_txt = "● REC"
+            dot_col = C_RED
+        else:
+            dot_txt = "●"
+            dot_col = C_DIM
 
-        # ── Body (collapsible) ────────────────────────────────────────────────
-        self._body = QWidget()
-        body_l = QVBoxLayout(self._body)
-        body_l.setContentsMargins(7, 3, 7, 7)
-        body_l.setSpacing(4)
+        _blit(screen, f_hdr, dot_txt, dot_col, (PAD, y))
+        title_s = f_hdr.render("DISPATCH", True, C_AMBER)
+        screen.blit(title_s, (W // 2 - title_s.get_width() // 2, y))
+        y += 18
 
-        # Current job
-        self._job = self._panel("CURRENT JOB")
-        body_l.addWidget(self._job["w"])
+        pygame.draw.line(screen, C_BORDER, (0, y), (W, y), 1)
+        y += 5
 
-        # Fleet
-        self._fleet = self._panel("FLEET")
-        body_l.addWidget(self._fleet["w"])
-
-        # Top jobs
-        self._market = self._panel("TOP JOBS")
-        body_l.addWidget(self._market["w"])
-
-        # Session + fuel
-        self._session = self._panel("SESSION / FUEL")
-        body_l.addWidget(self._session["w"])
-
-        # Divider
-        div = QFrame()
-        div.setFrameShape(QFrame.Shape.HLine)
-        div.setStyleSheet("color: rgba(245,166,35,40);")
-        body_l.addWidget(div)
-
-        # AI subtitle
-        self._subtitle = QLabel("")
-        self._subtitle.setWordWrap(True)
-        self._subtitle.setStyleSheet(
-            "font-size: 10px; color: rgb(240,243,248); "
-            "border-left: 2px solid rgb(245,166,35); "
-            "padding: 3px 7px;"
-        )
-        self._subtitle.hide()
-        body_l.addWidget(self._subtitle)
-
-        # Transcript echo
-        self._transcript_lbl = QLabel("")
-        self._transcript_lbl.setWordWrap(True)
-        self._transcript_lbl.setStyleSheet(
-            f"font-size: 8px; font-style: italic; color: {_css_col('dim')};"
-        )
-        self._transcript_lbl.hide()
-        body_l.addWidget(self._transcript_lbl)
-
-        # History
-        self._history_panel = self._panel("HISTORY")
-        self._history_panel["lbl"].setStyleSheet(
-            f"font-size: 8px; color: {_css_col('dim')};"
-        )
-        body_l.addWidget(self._history_panel["w"])
-
-        body_l.addStretch(1)
-        root.addWidget(self._body)
-
-    def _panel(self, title: str) -> dict:
-        """Create a labelled section; returns dict with 'w' (widget) and 'lbl'."""
-        frame = QFrame()
-        fl = QVBoxLayout(frame)
-        fl.setContentsMargins(0, 1, 0, 1)
-        fl.setSpacing(1)
-
-        t = QLabel(title)
-        t.setStyleSheet(
-            f"color: {_css_col('amber')}; "
-            f"font-size: 7px; font-weight: bold; letter-spacing: 1px;"
-        )
-        lbl = QLabel("—")
-        lbl.setWordWrap(True)
-        lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
-
-        fl.addWidget(t)
-        fl.addWidget(lbl)
-        return {"w": frame, "lbl": lbl, "title": t}
-
-    # ── Timers ────────────────────────────────────────────────────────────────
-
-    def _start_timers(self):
-        self._data_tmr = QTimer(self)
-        self._data_tmr.timeout.connect(self._refresh)
-        self._data_tmr.start(500)
-
-        self._anim_tmr = QTimer(self)
-        self._anim_tmr.timeout.connect(self._animate)
-        self._anim_tmr.start(280)
-
-    # ── Data refresh ──────────────────────────────────────────────────────────
-
-    def _refresh(self):
+        # ── Current job ───────────────────────────────────────────────────────
         try:
             import assistant as _a
             tel, snap, _, _, _ = _a.state.read()
-            ov = overlay_state
-            self._r_job(snap, tel)
-            self._r_fleet(snap)
-            self._r_market(snap)
-            self._r_session(snap, tel)
-            self._r_subtitle(ov)
-            self._r_history(ov)
-            self._r_ptt_key(_a)
-            self._mute_btn.setChecked(ov.muted)
-            self._mute_btn.setText("MUTED" if ov.muted else "MUTE")
+            player     = snap.get("player", {}) or {}
+            in_job     = player.get("in_job", False)
+            live_cargo = (tel.get("cargo") or "").strip()
+            live_mass  = float(tel.get("cargo_mass") or 0)
+
+            if in_job or live_mass > 0 or live_cargo:
+                cargo   = live_cargo or player.get("job_info_cargo") or "Unknown cargo"
+                target  = player.get("job_info_target") or ""
+                dist_km = int(player.get("job_info_planned_distance_km") or 0)
+                dist_mi = round(dist_km * 0.621371)
+                parts   = target.split(".") if target else []
+                dest    = parts[-1].replace("_", " ").title() if parts else "Unknown"
+
+                _blit(screen, f_sm,  "CURRENT JOB",       C_AMBER,  (PAD, y))
+                y += 13
+                _blit(screen, f_med, cargo,                C_BRIGHT, (PAD, y), W - PAD * 2)
+                y += 14
+                _blit(screen, f_sm,  f"→ {dest}   {dist_mi} mi",
+                      C_TEXT,  (PAD, y))
+                y += 15
+            else:
+                _blit(screen, f_sm, "No active load", C_DIM, (PAD, y))
+                y += 15
+
         except Exception:
-            pass
-        self.adjustSize()
+            _blit(screen, f_sm, "Waiting for game data…", C_DIM, (PAD, y))
+            y += 15
 
-    def _r_job(self, snap, tel):
-        lbl = self._job["lbl"]
-        player    = snap.get("player", {}) or {}
-        in_job    = player.get("in_job", False)
-        live_cargo = (tel.get("cargo") or "").strip()
-        live_mass  = float(tel.get("cargo_mass") or 0)
+        pygame.draw.line(screen, C_BORDER, (PAD, y), (W - PAD, y), 1)
+        y += 5
 
-        if in_job or live_mass > 0 or live_cargo:
-            cargo   = live_cargo or player.get("job_info_cargo") or "Unknown cargo"
-            target  = player.get("job_info_target") or ""
-            dist_km = int(player.get("job_info_planned_distance_km") or 0)
-            dist_mi = round(dist_km * 0.621371)
-            parts   = target.split(".") if target else []
-            dest    = parts[-1].replace("_", " ").title() if parts else "Unknown"
-            lbl.setText(f"{cargo}\n→ {dest}   {dist_mi} mi")
-            lbl.setStyleSheet(f"font-size: 9px; color: {_css_col('bright')};")
-        else:
-            lbl.setText("No active load")
-            lbl.setStyleSheet(f"font-size: 9px; color: {_css_col('dim')};")
+        # ── AI subtitle — fades over SUBTITLE_SECS ────────────────────────────
+        if ov.last_response and (now - ov.response_time) < SUBTITLE_SECS:
+            age   = now - ov.response_time
+            ratio = 1.0 - age / SUBTITLE_SECS
+            alpha = max(55, int(255 * ratio))
+            col   = tuple(int(c * alpha // 255) for c in C_BRIGHT)
+            acol  = tuple(int(c * alpha // 255) for c in C_AMBER)
 
-    def _r_fleet(self, snap):
-        lbl     = self._fleet["lbl"]
-        drivers = snap.get("drivers", [])
-        if not drivers:
-            lbl.setText("—")
-            return
-        on_job = [d for d in drivers if d.get("state") == 2]
-        idle   = [d for d in drivers if d.get("state") != 2]
-        lines  = [f"{len(drivers)} drivers  ■ {len(on_job)} on job  □ {len(idle)} idle"]
-        for d in idle[:2]:
-            city = d.get("current_city", "").replace("_", " ").title()
-            did  = d.get("id", "").replace("driver.", "")
-            lines.append(f"  [{did}]  {city}")
-        lbl.setText("\n".join(lines))
-        lbl.setStyleSheet(f"font-size: 9px; color: {_css_col('text')};")
+            # Amber left-edge accent bar
+            bar_h = min(3 * 13 + 4, H - y - 4)
+            if bar_h > 0:
+                pygame.draw.line(screen, acol, (PAD, y), (PAD, y + bar_h), 2)
 
-    def _r_market(self, snap):
-        lbl = self._market["lbl"]
-        fm  = snap.get("freight_market", [])
-        if not fm:
-            lbl.setText("—")
-            return
-        top   = sorted(fm, key=lambda j: j.get("revenue", 0), reverse=True)[:3]
-        lines = []
-        for j in top:
-            src = j.get("source_city", "?")
-            dst = j.get("destination_city", "?")
-            rev = j.get("revenue", 0)
-            lines.append(f"{src} → {dst}  ${rev:,}")
-        lbl.setText("\n".join(lines))
-        lbl.setStyleSheet(f"font-size: 9px; color: {_css_col('text')};")
+            lines = _wrap(ov.last_response, f_sm, W - PAD * 2 - 8)
+            for line in lines[:3]:
+                _blit(screen, f_sm, line, col, (PAD + 6, y))
+                y += 13
 
-    def _r_session(self, snap, tel):
-        lbl      = self._session["lbl"]
-        fuel_pct = float(tel.get("fuel_pct") or 0)
-        fin      = snap.get("finances", {}) or {}
-        jobs     = snap.get("jobs", [])
-        lines    = []
+        elif ov.last_transcript and (now - ov.transcript_time) < TRANSCRIPT_SECS:
+            # Transcript echo (italic-style: dim colour)
+            _blit(screen, f_sm,
+                  f"You: {ov.last_transcript}",
+                  C_DIM, (PAD, y), W - PAD * 2)
 
-        if fuel_pct > 0:
-            n   = 14
-            f   = round(fuel_pct / 100 * n)
-            bar = "█" * f + "░" * (n - f)
-            lines.append(f"FUEL [{bar}]  {fuel_pct:.0f}%")
-
-        if jobs:
-            total = sum(j.get("revenue", 0) for j in jobs[:5])
-            lines.append(f"RECENT  {len(jobs[:5])} jobs  ${total:,}")
-
-        money = fin.get("money", 0)
-        if money:
-            lines.append(f"CASH  ${money:,}")
-
-        lbl.setText("\n".join(lines) or "—")
-        color = _css_col("red") if 0 < fuel_pct < 20 else _css_col("text")
-        lbl.setStyleSheet(f"font-size: 9px; color: {color};")
-
-    def _r_subtitle(self, ov):
-        now = time.monotonic()
-
-        # AI response subtitle (fades over SUBTITLE_SECS)
-        if ov.last_response and (now - ov.response_time) < _SUBTITLE_SECS:
-            age     = now - ov.response_time
-            alpha   = max(60, int(255 * (1 - age / _SUBTITLE_SECS)))
-            self._subtitle.setText(f'"{ov.last_response}"')
-            self._subtitle.setStyleSheet(
-                f"font-size: 10px; color: rgba(240,243,248,{alpha}); "
-                f"border-left: 2px solid rgba(245,166,35,{alpha}); "
-                f"padding: 3px 7px;"
-            )
-            self._subtitle.show()
-        else:
-            self._subtitle.hide()
-
-        # Your transcript echo (fades faster)
-        if ov.last_transcript and (now - ov.transcript_time) < _TRANSCRIPT_SECS:
-            self._transcript_lbl.setText(f"You: {ov.last_transcript}")
-            self._transcript_lbl.show()
-        else:
-            self._transcript_lbl.hide()
-
-    def _r_history(self, ov):
-        lbl   = self._history_panel["lbl"]
-        items = ov.history[-6:]   # last 3 turns
-        lines = []
-        for entry in items:
-            role = entry.get("role", "")
-            text = entry.get("text", "")
-            disp = (text[:70] + "…") if len(text) > 70 else text
-            prefix = "YOU" if role == "user" else " AI"
-            lines.append(f"{prefix}: {disp}")
-        lbl.setText("\n".join(lines) or "—")
-
-    def _r_ptt_key(self, assistant_mod):
-        try:
-            key = (assistant_mod.PTT_KEY_ENV or "delete").upper()
-            self._ptt_lbl.setText(f"[{key}]")
-        except Exception:
-            pass
-
-    # ── Animation ─────────────────────────────────────────────────────────────
-
-    def _animate(self):
-        self._rec_frame = (self._rec_frame + 1) % 4
-        ov = overlay_state
-
-        if ov.recording:
-            filled = self._rec_frame
-            dots   = "●" * filled + "○" * (3 - filled)
-            self._rec_dot.setText(dots)
-            self._rec_dot.setStyleSheet(
-                f"color: {_css_col('red')}; font-size: 11px;"
-            )
-            self._title.setText("● REC")
-            self._title.setStyleSheet(
-                f"color: {_css_col('red')}; font-size: 9px; "
-                f"font-weight: bold; letter-spacing: 2px;"
-            )
-        else:
-            self._rec_dot.setText("●")
-            self._rec_dot.setStyleSheet(
-                f"color: {_css_col('dim')}; font-size: 11px;"
-            )
-            self._title.setText("DISPATCH")
-            self._title.setStyleSheet(
-                f"color: {_css_col('amber')}; font-size: 9px; "
-                f"font-weight: bold; letter-spacing: 2px;"
-            )
-
-    # ── Button handlers ───────────────────────────────────────────────────────
-
-    def _on_mute(self):
-        overlay_state.muted = self._mute_btn.isChecked()
-        try:
-            import assistant
-            assistant._set_tts_muted(overlay_state.muted)
-        except Exception:
-            pass
-
-    def _on_collapse(self):
-        self._collapsed = not self._collapsed
-        self._body.setVisible(not self._collapsed)
-        self._collapse_btn.setText("□" if self._collapsed else "━")
-        self.adjustSize()
-
-    # ── Background paint ──────────────────────────────────────────────────────
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QBrush(_C["bg"]))
-        p.setPen(QPen(_C["border"], 1))
-        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 7, 7)
-
-        # Header bottom border
-        p.setPen(QPen(_C["amber_lo"], 1))
-        p.drawLine(0, 25, self.width(), 25)
-        p.end()
+        pygame.display.flip()
+        clock.tick(FPS)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def start_overlay():
     """
-    Create and show the overlay widget in the calling thread.
-
-    IMPORTANT: must be called from the main thread AFTER QApplication has been
-    created (client.py does this at the very top of main()).  Qt forbids creating
-    widgets outside the main thread.  There is no internal threading here — the
-    caller owns the event loop (app.exec() in client.py's main()).
-
-    Returns the DispatchOverlay instance; keep the reference alive so GC does
-    not destroy the window.
+    Launch the pygame overlay in a daemon thread.  Returns the thread object.
+    The overlay renders independently; the caller does not need to run an
+    event loop — pygame manages its own SDL event pump inside _run_overlay().
     """
-    if not PYQT6_OK:
+    if not PYGAME_OK:
         print(
-            "[Overlay] PyQt6 not installed — overlay disabled.\n"
-            "          Install it with:  pip install PyQt6",
+            "[Overlay] pygame not installed — overlay disabled.\n"
+            "          Install it with:  pip install pygame",
             flush=True,
         )
         return None
 
-    window = DispatchOverlay()
-    window.show()
-    print("[Overlay] DispatchOverlay created in main thread", flush=True)
-    return window
+    t = threading.Thread(target=_run_overlay, daemon=True, name="overlay-pygame")
+    t.start()
+    return t

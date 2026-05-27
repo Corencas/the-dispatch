@@ -394,57 +394,52 @@ def build_context(telemetry: dict, snapshot: dict, freight_market: list,
 
 # ── Snapshot summariser ───────────────────────────────────────────────────────
 
-def build_context_summary(snapshot: dict) -> str:
+def build_context_summary(snapshot: dict, telemetry: dict | None = None) -> str:
     if not snapshot:
         return "No game data loaded."
 
+    telemetry = telemetry or {}
     ctx: dict = {}
     ctx["money"] = snapshot.get("finances", {}).get("money", "unknown")
 
-    # ── Diagnostic: log all candidate active-job fields ───────────────────────
+    # ── Live telemetry — ground truth, updated every 2 s from SCS SDK ─────────
+    live_cargo      = (telemetry.get("cargo") or "").strip()
+    live_cargo_mass = float(telemetry.get("cargo_mass") or 0)
+    log.info(f"TELEMETRY: cargo={live_cargo!r}, cargo_mass={live_cargo_mass}")
+
+    # ── Save-file fields (may lag by up to one autosave cycle) ───────────────
     player = snapshot.get("player", {}) or {}
     log.info(f"SNAP_PLAYER (full): {player!r}")
-    log.info(f"SNAP top-level current_job={snapshot.get('current_job')!r}")
-    log.info(f"SNAP top-level job_status={snapshot.get('job_status')!r}")
-    log.info(f"SNAP top-level active_job={snapshot.get('active_job')!r}")
-    log.info(f"SNAP top-level in_job={snapshot.get('in_job')!r}")
 
-    # ── Trailer extraction (for cargo context only, NOT job detection) ────────
-    trailer = snapshot.get("trailer", {}) or {}
-    log.info(f"SNAP_TRAILER: {trailer!r}")
-
-    active_cargo       = trailer.get("active_cargo", "") or ""
+    trailer           = snapshot.get("trailer", {}) or {}
     active_destination = trailer.get("active_destination", "") or ""
-
-    # Extract cargo type code: 'cargo.catd6rpm' → 'catd6rpm'
-    trailer_cargo_type = ""
-    if active_cargo:
-        parts = active_cargo.split(".", 1)
-        trailer_cargo_type = parts[1] if len(parts) > 1 else active_cargo
-
-    trailer_attached = bool(trailer.get("id"))
+    trailer_attached   = bool(trailer.get("id"))
 
     # ── Active job detection ──────────────────────────────────────────────────
-    # Primary:  player.in_job parsed from save (True/False/None).
-    # Fallback: if in_job is missing/False but job_info_cargo is populated,
-    #           that is definitive proof of an active job.
-    # Never use trailer.active_destination — it persists after job completion.
-    # player.in_job is the ONLY source of truth for active job status.
-    # job_info_cargo and trailer.active_destination persist after job completion
-    # and must not be used as fallbacks.
-    player_in_job = player.get("in_job")   # True or False (parser returns False if absent)
-    has_active_job = player_in_job is True
+    # Priority 1 (live): telemetry cargo_mass > 0 or cargo string non-empty
+    #   → something is physically loaded right now.
+    # Priority 2 (save):  player.in_job == True from the save file.
+    # NEVER use trailer.active_destination or job_info_cargo — both persist
+    # after delivery and will report stale data.
+    player_in_job = player.get("in_job")   # True / False
+    if live_cargo_mass > 0 or bool(live_cargo):
+        has_active_job = True
+        log.info(
+            f"ACTIVE JOB DETECTION: telemetry cargo={live_cargo!r} "
+            f"mass={live_cargo_mass} -> has_active_job=True (live)"
+        )
+    elif player_in_job is True:
+        has_active_job = True
+        log.info("ACTIVE JOB DETECTION: player.in_job=True -> has_active_job=True (save)")
+    else:
+        has_active_job = False
+        log.info(
+            f"ACTIVE JOB DETECTION: no live cargo, player.in_job={player_in_job!r} "
+            f"-> has_active_job=False"
+        )
 
-    log.info(
-        f"ACTIVE JOB DETECTION: player.in_job={player_in_job!r} "
-        f"-> has_active_job={has_active_job} "
-        f"(trailer.active_destination={active_destination!r} ignored, "
-        f"job_info_cargo={player.get('job_info_cargo')!r} ignored)"
-    )
-
-    ctx["trailer_attached"]   = trailer_attached
-    ctx["trailer_cargo_type"] = trailer_cargo_type or None
-    ctx["has_active_job"]     = has_active_job
+    ctx["trailer_attached"] = trailer_attached
+    ctx["has_active_job"]   = has_active_job
 
     # ── Raw data ──────────────────────────────────────────────────────────────
     freight_market = snapshot.get("freight_market", [])
@@ -477,18 +472,21 @@ def build_context_summary(snapshot: dict) -> str:
 
     # ── Job source logic ──────────────────────────────────────────────────────
     if has_active_job:
-        # Build current job context from player.job_info_* fields (reliable).
-        job_cargo_raw = player.get("job_info_cargo") or active_cargo or "unknown"
-        job_target    = player.get("job_info_target") or active_destination or ""
-        job_dist_km   = int(player.get("job_info_planned_distance_km") or 0)
-        job_urgency   = player.get("job_info_urgency", "0") or "0"
+        # Cargo: prefer live telemetry (always current); fall back to save-file field.
+        job_cargo = live_cargo or player.get("job_info_cargo") or "unknown"
+
+        # Destination: save-file job_info_target is correct during an active job
+        # (unlike active_destination which persists post-delivery).
+        job_target  = player.get("job_info_target") or active_destination or ""
+        job_dist_km = int(player.get("job_info_planned_distance_km") or 0)
+        job_urgency = player.get("job_info_urgency", "0") or "0"
 
         dest_parts = job_target.split(".") if job_target else []
         dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else "unknown"
         company    = dest_parts[1].replace("_", " ").title() if len(dest_parts) > 1 else ""
 
         ctx["current_job"] = {
-            "cargo":          job_cargo_raw,
+            "cargo":          job_cargo,
             "destination":    dest_city,
             "company":        company,
             "distance_miles": round(job_dist_km * 0.621371),
@@ -497,8 +495,8 @@ def build_context_summary(snapshot: dict) -> str:
         ctx["job_status"] = "ACTIVE_LOAD: Driver is on an active job. Do not list new jobs."
         candidates = []   # suppress — driver already has a load
         log.info(
-            f"Job source: active job -> cargo={job_cargo_raw!r}, dest={dest_city!r}, "
-            f"{round(job_dist_km * 0.621371)} mi"
+            f"Job source: active job -> cargo={job_cargo!r} (live={live_cargo!r}), "
+            f"dest={dest_city!r}, {round(job_dist_km * 0.621371)} mi"
         )
 
     elif trailer_attached and trailer_body_type:
@@ -599,7 +597,7 @@ def query_claude(user_message: str, prefs: dict,
     personality = prefs.get('personality', 'professional')
 
     # ── Compact snapshot summary (replaces raw JSON dump) ─────────────────────
-    summary = build_context_summary(snapshot)
+    summary = build_context_summary(snapshot, telemetry=telemetry)
     full_message = f"Current game data:\n{summary}\n\n{user_message}"
 
     est_tokens = len(full_message) // 4

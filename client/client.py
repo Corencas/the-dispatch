@@ -3,6 +3,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import time
 import os
+import sys
 import shutil
 import requests
 import threading
@@ -19,6 +20,35 @@ from telemetry import start_telemetry_loop
 import assistant
 
 load_dotenv()
+
+# ── Single-instance guard ─────────────────────────────────────────────────────
+
+def _acquire_single_instance_lock():
+    """
+    Create a Windows named mutex. If another process already holds it,
+    show a warning and exit — only one Dispatch client may run at a time.
+    Returns the mutex handle (must stay alive for the process lifetime).
+    """
+    import ctypes
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "TheDispatch_SingleInstance_v1")
+    ERROR_ALREADY_EXISTS = 183
+    if ctypes.windll.kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showwarning(
+                'The Dispatch',
+                'The Dispatch is already running.\nCheck the system tray.'
+            )
+            root.destroy()
+        except Exception:
+            print('[Dispatch] Already running — only one instance allowed.')
+        sys.exit(0)
+    return mutex   # keep reference so GC doesn't release the handle
+
+_instance_mutex = _acquire_single_instance_lock()
 
 SERVER_URL       = os.getenv('SERVER_URL', 'http://127.0.0.1:5001')
 DISCORD_TOKEN    = os.getenv('DISCORD_TOKEN', '')

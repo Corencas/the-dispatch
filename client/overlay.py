@@ -12,6 +12,7 @@ Requirements
 """
 
 import ctypes
+import os
 import threading
 import time
 
@@ -34,45 +35,45 @@ overlay_state: dict = {
 
 def start_overlay(overlay_state):
     def _run():
+        user32 = ctypes.windll.user32
+
+        # 1. Get screen dimensions and compute position before creating the window
+        screen_w = user32.GetSystemMetrics(0)
+        screen_h = user32.GetSystemMetrics(1)
+        x = screen_w - OVERLAY_W - 10
+        y = 10
+
+        # Hint SDL to place the window at the right position on creation
+        os.environ['SDL_VIDEO_WINDOW_POS'] = f'{x},{y}'
+
         pygame.init()
         screen = pygame.display.set_mode((OVERLAY_W, OVERLAY_H), pygame.NOFRAME)
         pygame.display.set_caption("dispatch-overlay")
 
-        # Force window to top-right of screen, always on top
         hwnd = pygame.display.get_wm_info()['window']
-        user32 = ctypes.windll.user32
-        screen_w = user32.GetSystemMetrics(0)
 
-        # Position top-right
-        x = screen_w - OVERLAY_W - 10
-        y = 10
-
-        SWP_SHOWWINDOW = 0x0040
-        HWND_TOPMOST = -1
-        user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, OVERLAY_W, OVERLAY_H, SWP_SHOWWINDOW)
-
-        # Set extended window styles:
-        #   WS_EX_LAYERED   — required for colorkey/alpha transparency
-        #   WS_EX_TOPMOST   — always on top
+        # 2. Set ALL extended styles at once (no read-modify-write — set clean)
+        #   WS_EX_LAYERED    — required for colorkey/alpha transparency
+        #   WS_EX_TOPMOST    — always on top
         #   WS_EX_NOACTIVATE — never steals or loses focus when other windows are clicked
-        #   WS_EX_TOOLWINDOW — hides from taskbar / Alt+Tab
+        #   WS_EX_TOOLWINDOW — hides from taskbar and Alt+Tab
         GWL_EXSTYLE      = -20
-        WS_EX_LAYERED    = 0x00080000
-        WS_EX_TOPMOST    = 0x00000008
+        WS_EX_LAYERED    = 0x80000
+        WS_EX_TOPMOST    = 0x8
         WS_EX_NOACTIVATE = 0x08000000
-        WS_EX_TOOLWINDOW = 0x00000080
-        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        WS_EX_TOOLWINDOW = 0x80
         ctypes.windll.user32.SetWindowLongW(
             hwnd, GWL_EXSTYLE,
-            style | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
         )
 
-        # Set transparency using colorkey (RGB packed as int: R + G*256 + B*65536)
-        colorkey = (1, 1, 1)
+        # 3. Set colorkey transparency (RGB packed as int: R + G*256 + B*65536)
         colorkey_int = 1 + 1*256 + 1*65536  # RGB(1,1,1)
-        LWA_COLORKEY = 0x1
-        LWA_ALPHA = 0x2
-        ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, colorkey_int, 220, LWA_COLORKEY | LWA_ALPHA)
+        ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, colorkey_int, 220, 0x1 | 0x2)
+
+        # 4. Position and force topmost
+        HWND_TOPMOST = -1
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, OVERLAY_W, OVERLAY_H, 0x0040)  # SWP_SHOWWINDOW
 
         font_big = pygame.font.SysFont("Arial", 16, bold=True)
         font_small = pygame.font.SysFont("Arial", 13)
@@ -83,7 +84,7 @@ def start_overlay(overlay_state):
                 if event.type == pygame.QUIT:
                     return
 
-            screen.fill(colorkey)  # transparent background
+            screen.fill((1, 1, 1))  # colorkey — rendered transparent
 
             # Draw dark panel
             pygame.draw.rect(screen, (20, 20, 20), (0, 0, OVERLAY_W, OVERLAY_H), border_radius=8)
@@ -117,11 +118,9 @@ def start_overlay(overlay_state):
 
             pygame.display.flip()
 
-            # Re-assert HWND_TOPMOST every frame without moving, resizing, or activating
-            SWP_NOMOVE     = 0x0002
-            SWP_NOSIZE     = 0x0001
-            SWP_NOACTIVATE = 0x0010
-            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+            # 5. Re-assert topmost every frame with position + NOACTIVATE | SHOWWINDOW
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, OVERLAY_W, OVERLAY_H,
+                                0x0010 | 0x0040)  # SWP_NOACTIVATE | SWP_SHOWWINDOW
 
             clock.tick(30)
 

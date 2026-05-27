@@ -2,6 +2,7 @@ anthropic
 openai
 edge-tts
 elevenlabs
+game-overlay-sdk
 pygame-ce
 sounddevice
 soundfile

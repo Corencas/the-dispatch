@@ -1,35 +1,40 @@
 """
-overlay.py — pygame-based always-on-top HUD for The Dispatch.
+overlay.py — game-overlay-sdk HUD for The Dispatch.
 
-Uses SDL/DirectX via pygame, which can render over fullscreen games on Windows.
-Windows API SetWindowPos(HWND_TOPMOST) forces z-order above exclusive fullscreen.
+Injects a DLL into the ATS/ETS2 DirectX process and renders text directly
+inside the game's frame buffer — works over true exclusive fullscreen.
 
-NOTE: For most reliable results, run ATS in Borderless Windowed mode.
-      DirectX exclusive fullscreen owns the entire display surface; some GPU
-      drivers will still prevent any other window from rendering on top of it.
-      Borderless Window is a regular desktop window that HWND_TOPMOST can beat.
-
-Thread model:
-  - start_overlay() spawns a single daemon thread "overlay-pygame".
-  - The thread creates the pygame window, then spins the draw loop at 20 FPS.
-  - overlay_state is written by assistant.py and read here — no locking needed
-    for simple attribute reads/writes on CPython.
+Requirements / caveats
+──────────────────────
+• pip install game-overlay-sdk
+• Client MUST be run as Administrator (DLL injection requires elevated privileges).
+• start_monitor() listens for NEW process-creation events — it will not inject
+  into a game that is already running.  Launch order must be:
+    1. Start The Dispatch client (as Administrator)
+    2. Launch ATS / ETS2
+• Steam forks game processes by default, breaking injection.  Fix: create a
+  file called steam_appid.txt containing the app ID in the game's install
+  directory (ATS: 270880 / ETS2: 227300).  One-time setup.
+• Vulkan SDK must be installed (the injected DLL requires it).
+• Only the latest send_message() call is displayed per frame; updates are
+  capped at ~200 ms by the injected DLL.
 """
 
-import ctypes
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 
 try:
-    import pygame
-    PYGAME_OK = True
+    import game_overlay_sdk.injector as injector
+    SDK_OK = True
 except ImportError:
-    PYGAME_OK = False
+    SDK_OK = False
 
+log = logging.getLogger('overlay')
 
 # ── Shared overlay state ──────────────────────────────────────────────────────
-# Written by assistant.py; read by the overlay's draw loop.
+# Written by assistant.py; read here in the message-build loop.
 
 @dataclass
 class OverlayState:
@@ -43,261 +48,174 @@ class OverlayState:
 
 overlay_state = OverlayState()
 
+# ── Config ────────────────────────────────────────────────────────────────────
 
-# ── Layout / palette ──────────────────────────────────────────────────────────
-
-W, H            = 300, 220   # window size in pixels
-FPS             = 20
-SUBTITLE_SECS   = 8.0
-TRANSCRIPT_SECS = 3.5
-PAD             = 9
-
-# COLORKEY is painted for "transparent" areas.  SetLayeredWindowAttributes with
-# LWA_COLORKEY tells Win32 to composite those pixels as fully transparent.
-COLORKEY  = (2, 2, 2)
-
-C_DARK    = (13,  15,  18)
-C_AMBER   = (245, 166, 35)
-C_TEXT    = (176, 184, 204)
-C_DIM     = (90,  100, 118)
-C_BRIGHT  = (240, 243, 248)
-C_RED     = (255, 80,  80)
-C_BORDER  = (60,  65,  75)
+ATS_EXE       = "amtrucks.exe"
+ETS2_EXE      = "eurotrucks2.exe"
+SUBTITLE_SECS = 8.0
+SEND_INTERVAL = 0.5   # seconds between send_message() calls
 
 
-# ── Win32 helpers ─────────────────────────────────────────────────────────────
+# ── Message builder ───────────────────────────────────────────────────────────
 
-def _screen_size() -> tuple:
-    u = ctypes.windll.user32
-    return u.GetSystemMetrics(0), u.GetSystemMetrics(1)
-
-
-def _configure_window(hwnd: int, x: int, y: int, w: int, h: int):
+def _build_message(ov: OverlayState) -> str:
     """
-    1. SetWindowPos(HWND_TOPMOST) — forces the window above all others including
-       exclusive-fullscreen DirectX apps.
-    2. SetLayeredWindowAttributes — combines:
-         LWA_COLORKEY  →  pixels painted COLORKEY become fully transparent
-         LWA_ALPHA     →  remaining pixels rendered at 88 % opacity (dark glass)
+    Compose the overlay text from current overlay + game state.
+    All content fits on a single line separated by  |  so the SDK can
+    render it as one text block inside the game frame.
     """
-    user32 = ctypes.windll.user32
+    parts = []
+    now   = time.monotonic()
 
-    HWND_TOPMOST   = -1
-    SWP_SHOWWINDOW = 0x0040
-    user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_SHOWWINDOW)
+    # Recording indicator
+    if ov.recording:
+        parts.append("[ REC ]")
 
-    GWL_EXSTYLE    = -20
-    WS_EX_LAYERED  = 0x00080000
-    LWA_COLORKEY   = 0x00000001
-    LWA_ALPHA      = 0x00000002
-    WINDOW_ALPHA   = 225   # 0-255; 225 ≈ 88 % opaque — dark glass feel
+    # Mute indicator
+    if ov.muted:
+        parts.append("[ MUTED ]")
 
-    r, g, b  = COLORKEY
-    colorref = r | (g << 8) | (b << 16)
+    # Current job — read live from assistant state (authoritative source)
+    try:
+        import assistant as _a
+        tel, snap, _, _, _ = _a.state.read()
+        player     = snap.get("player", {}) or {}
+        in_job     = player.get("in_job", False)
+        live_cargo = (tel.get("cargo") or "").strip()
+        live_mass  = float(tel.get("cargo_mass") or 0)
 
-    style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
-    user32.SetLayeredWindowAttributes(hwnd, colorref, WINDOW_ALPHA,
-                                      LWA_COLORKEY | LWA_ALPHA)
-
-
-# ── Text utilities ────────────────────────────────────────────────────────────
-
-def _blit(surf, font, text: str, color, xy: tuple, max_w: int = 9999):
-    """Render one line, truncating with '…' if wider than max_w. Returns height."""
-    if font.size(text)[0] > max_w:
-        while text and font.size(text + '…')[0] > max_w:
-            text = text[:-1]
-        text += '…'
-    s = font.render(text, True, color)
-    surf.blit(s, xy)
-    return s.get_height()
-
-
-def _wrap(text: str, font, max_w: int) -> list:
-    """Word-wrap text into lines no wider than max_w pixels."""
-    words, lines, cur = text.split(), [], []
-    for word in words:
-        probe = ' '.join(cur + [word])
-        if font.size(probe)[0] <= max_w:
-            cur.append(word)
+        if in_job or live_mass > 0 or live_cargo:
+            cargo   = live_cargo or player.get("job_info_cargo") or "?"
+            target  = player.get("job_info_target") or ""
+            dist_km = int(player.get("job_info_planned_distance_km") or 0)
+            dist_mi = round(dist_km * 0.621371)
+            t_parts = target.split(".") if target else []
+            dest    = t_parts[-1].replace("_", " ").title() if t_parts else "?"
+            parts.append(f"JOB: {cargo} -> {dest}")
+            if dist_mi:
+                parts.append(f"{dist_mi} mi")
         else:
-            if cur:
-                lines.append(' '.join(cur))
-            cur = [word]
-    if cur:
-        lines.append(' '.join(cur))
-    return lines or ['']
+            parts.append("No active load")
+
+        # Fuel warning
+        fuel = float(tel.get("fuel_pct") or 100)
+        if 0 < fuel < 20:
+            parts.append(f"!! FUEL: {fuel:.0f}%")
+
+    except Exception:
+        parts.append("DISPATCH READY")
+
+    # AI subtitle — show for SUBTITLE_SECS then drop it
+    if ov.last_response and (now - ov.response_time) < SUBTITLE_SECS:
+        resp = ov.last_response
+        if len(resp) > 100:
+            resp = resp[:97] + "..."
+        parts.append(f"DISPATCH: {resp}")
+
+    return "  |  ".join(parts) if parts else "DISPATCH READY"
 
 
-# ── Main render loop ──────────────────────────────────────────────────────────
+# ── Overlay thread ────────────────────────────────────────────────────────────
 
-def _run_overlay():
-    if not PYGAME_OK:
-        print("[Overlay] pygame not installed — overlay disabled.  pip install pygame",
-              flush=True)
+def _run(ov: OverlayState):
+    """
+    Daemon thread: calls injector.start_monitor(), waits for injection,
+    then loops sending HUD updates every SEND_INTERVAL seconds.
+
+    InjectionError handling mirrors the official SDK example:
+      TARGET_PROCESS_IS_NOT_CREATED_ERROR  →  game not launched yet, wait and retry
+      TARGET_PROCESS_WAS_TERMINATED_ERROR  →  game exited, stop the thread
+    """
+    if not SDK_OK:
+        print(
+            "[Overlay] game-overlay-sdk not installed — overlay disabled.\n"
+            "          pip install game-overlay-sdk",
+            flush=True,
+        )
         return
 
-    print("[Overlay] Starting pygame overlay …", flush=True)
     print(
-        "[Overlay] NOTE: run ATS in Borderless Windowed mode for the overlay to appear.\n"
-        "          Options → Graphics → Display Mode → Borderless Window",
+        f"[Overlay] Monitoring for {ATS_EXE} / {ETS2_EXE} …\n"
+        "[Overlay] IMPORTANT: client must run as Administrator for injection.\n"
+        "[Overlay] Launch ATS/ETS2 AFTER starting this client so the monitor\n"
+        "          can catch the process-creation event.",
         flush=True,
     )
 
     try:
-        pygame.init()
-        pygame.font.init()
+        injector.enable_monitor_logger()
+        injector.start_monitor(ATS_EXE)
+        log.info(f"[Overlay] start_monitor({ATS_EXE!r}) registered")
     except Exception as exc:
-        print(f"[Overlay] pygame.init() failed: {exc}", flush=True)
+        log.error(f"[Overlay] start_monitor failed: {exc}")
+        print(f"[Overlay] start_monitor failed: {exc}", flush=True)
         return
 
-    sw, sh = _screen_size()
-    ox, oy = sw - W - 12, 12   # top-right corner, 12 px from edges
-
-    try:
-        screen = pygame.display.set_mode((W, H), pygame.NOFRAME)
-        pygame.display.set_caption("Dispatch HUD")
-    except Exception as exc:
-        print(f"[Overlay] Display init failed: {exc}", flush=True)
-        return
-
-    # Win32: force topmost + set up transparent colorkey + window alpha
-    try:
-        hwnd = pygame.display.get_wm_info()['window']
-        _configure_window(hwnd, ox, oy, W, H)
-        print(f"[Overlay] Window at ({ox},{oy}), HWND_TOPMOST + layered attrs set",
-              flush=True)
-    except Exception as exc:
-        print(f"[Overlay] Win32 setup failed: {exc}", flush=True)
-
-    # Fonts
-    try:
-        f_sm  = pygame.font.SysFont("Consolas", 10)
-        f_med = pygame.font.SysFont("Consolas", 11)
-        f_hdr = pygame.font.SysFont("Consolas", 11, bold=True)
-    except Exception:
-        f_sm = f_med = f_hdr = pygame.font.Font(None, 14)
-
-    clock     = pygame.time.Clock()
-    rec_tick  = 0
+    # Give the injection a moment to complete after process creation
+    time.sleep(3)
+    log.info("[Overlay] Injection wait done — entering message loop")
+    print("[Overlay] Injection wait done — message loop active", flush=True)
 
     while True:
-        # Pump events — required to prevent Windows marking the process as
-        # "not responding" and to receive WM_QUIT if the window is destroyed.
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return
-
-        ov  = overlay_state
-        now = time.monotonic()
-
-        # ── Background ───────────────────────────────────────────────────────
-        # Fill with COLORKEY first (all pixels = transparent via Win32 colorkey).
-        screen.fill(COLORKEY)
-        # Draw rounded dark panel — corners stay COLORKEY → transparent.
-        pygame.draw.rect(screen, C_DARK, pygame.Rect(0, 0, W, H), border_radius=8)
-        # Double amber top border
-        pygame.draw.line(screen, C_AMBER, (8, 1), (W - 8, 1), 2)
-
-        y = 6
-
-        # ── Header ───────────────────────────────────────────────────────────
-        rec_tick = (rec_tick + 1) % FPS
-        if ov.recording:
-            dot_txt = "● REC"
-            dot_col = C_RED
-        else:
-            dot_txt = "●"
-            dot_col = C_DIM
-
-        _blit(screen, f_hdr, dot_txt, dot_col, (PAD, y))
-        title_s = f_hdr.render("DISPATCH", True, C_AMBER)
-        screen.blit(title_s, (W // 2 - title_s.get_width() // 2, y))
-        y += 18
-
-        pygame.draw.line(screen, C_BORDER, (0, y), (W, y), 1)
-        y += 5
-
-        # ── Current job ───────────────────────────────────────────────────────
         try:
-            import assistant as _a
-            tel, snap, _, _, _ = _a.state.read()
-            player     = snap.get("player", {}) or {}
-            in_job     = player.get("in_job", False)
-            live_cargo = (tel.get("cargo") or "").strip()
-            live_mass  = float(tel.get("cargo_mass") or 0)
+            msg = _build_message(ov)
+            injector.send_message(msg)
 
-            if in_job or live_mass > 0 or live_cargo:
-                cargo   = live_cargo or player.get("job_info_cargo") or "Unknown cargo"
-                target  = player.get("job_info_target") or ""
-                dist_km = int(player.get("job_info_planned_distance_km") or 0)
-                dist_mi = round(dist_km * 0.621371)
-                parts   = target.split(".") if target else []
-                dest    = parts[-1].replace("_", " ").title() if parts else "Unknown"
+        except injector.InjectionError as err:
+            ec            = err.exit_code
+            not_created   = injector.CustomExitCodes.TARGET_PROCESS_IS_NOT_CREATED_ERROR.value
+            terminated    = injector.CustomExitCodes.TARGET_PROCESS_WAS_TERMINATED_ERROR.value
 
-                _blit(screen, f_sm,  "CURRENT JOB",       C_AMBER,  (PAD, y))
-                y += 13
-                _blit(screen, f_med, cargo,                C_BRIGHT, (PAD, y), W - PAD * 2)
-                y += 14
-                _blit(screen, f_sm,  f"→ {dest}   {dist_mi} mi",
-                      C_TEXT,  (PAD, y))
-                y += 15
+            if ec == not_created:
+                # Game hasn't launched yet — poll quietly
+                log.debug("[Overlay] waiting for game process …")
+                time.sleep(5)
+                continue
+            elif ec == terminated:
+                log.warning("[Overlay] game process terminated — overlay thread exiting")
+                print("[Overlay] Game process terminated — overlay stopped", flush=True)
+                try:
+                    injector.release_resources()
+                except Exception:
+                    pass
+                return
             else:
-                _blit(screen, f_sm, "No active load", C_DIM, (PAD, y))
-                y += 15
+                log.warning(f"[Overlay] InjectionError exit_code={ec} — retrying")
 
-        except Exception:
-            _blit(screen, f_sm, "Waiting for game data…", C_DIM, (PAD, y))
-            y += 15
+        except Exception as exc:
+            log.debug(f"[Overlay] send_message error: {exc}")
 
-        pygame.draw.line(screen, C_BORDER, (PAD, y), (W - PAD, y), 1)
-        y += 5
-
-        # ── AI subtitle — fades over SUBTITLE_SECS ────────────────────────────
-        if ov.last_response and (now - ov.response_time) < SUBTITLE_SECS:
-            age   = now - ov.response_time
-            ratio = 1.0 - age / SUBTITLE_SECS
-            alpha = max(55, int(255 * ratio))
-            col   = tuple(int(c * alpha // 255) for c in C_BRIGHT)
-            acol  = tuple(int(c * alpha // 255) for c in C_AMBER)
-
-            # Amber left-edge accent bar
-            bar_h = min(3 * 13 + 4, H - y - 4)
-            if bar_h > 0:
-                pygame.draw.line(screen, acol, (PAD, y), (PAD, y + bar_h), 2)
-
-            lines = _wrap(ov.last_response, f_sm, W - PAD * 2 - 8)
-            for line in lines[:3]:
-                _blit(screen, f_sm, line, col, (PAD + 6, y))
-                y += 13
-
-        elif ov.last_transcript and (now - ov.transcript_time) < TRANSCRIPT_SECS:
-            # Transcript echo (italic-style: dim colour)
-            _blit(screen, f_sm,
-                  f"You: {ov.last_transcript}",
-                  C_DIM, (PAD, y), W - PAD * 2)
-
-        pygame.display.flip()
-        clock.tick(FPS)
+        time.sleep(SEND_INTERVAL)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
-def start_overlay():
+def start_overlay(ov: OverlayState = None):
     """
-    Launch the pygame overlay in a daemon thread.  Returns the thread object.
-    The overlay renders independently; the caller does not need to run an
-    event loop — pygame manages its own SDL event pump inside _run_overlay().
+    Inject into ATS and start sending HUD updates.
+
+    Parameters
+    ----------
+    ov : OverlayState, optional
+        Shared state written by assistant.py (recording flag, last AI response,
+        etc.).  Defaults to the module-level overlay_state instance.
+
+    Returns the daemon thread so the caller can keep a reference.
+
+    Requires:
+      - game-overlay-sdk installed  (pip install game-overlay-sdk)
+      - Process running as Administrator
+      - ATS launched AFTER this function is called
     """
-    if not PYGAME_OK:
+    if not SDK_OK:
         print(
-            "[Overlay] pygame not installed — overlay disabled.\n"
-            "          Install it with:  pip install pygame",
+            "[Overlay] game-overlay-sdk not installed — overlay disabled.\n"
+            "          pip install game-overlay-sdk",
             flush=True,
         )
         return None
 
-    t = threading.Thread(target=_run_overlay, daemon=True, name="overlay-pygame")
+    target = ov if ov is not None else overlay_state
+    t = threading.Thread(target=_run, args=(target,), daemon=True, name="overlay-sdk")
     t.start()
     return t

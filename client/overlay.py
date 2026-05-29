@@ -12,6 +12,7 @@ Requirements
 
 import ctypes
 import threading
+import time
 import tkinter as tk
 
 # Module-level shared state dict — written by assistant.py, read by the update loop.
@@ -25,6 +26,13 @@ overlay_state: dict = {
     "history":         [],
 }
 
+_TRANSCRIPT_TTL = 12.0   # seconds to show the transcript after PTT release
+_BG    = '#0d0f12'
+_AMBER = '#f5a623'
+_GREEN = '#1fba5a'
+_RED   = '#e53535'
+_DIM   = '#6b7280'
+
 
 def start_overlay(overlay_state):
     print("[Overlay] start_overlay() called", flush=True)
@@ -35,69 +43,113 @@ def start_overlay(overlay_state):
             print("[Overlay] thread started", flush=True)
 
             root = tk.Tk()
-            root.overrideredirect(True)       # no title bar / border
+            root.overrideredirect(True)
             root.attributes('-topmost', True)
-            root.attributes('-alpha', 0.85)
-            root.configure(bg='black')
+            root.attributes('-alpha', 0.88)
+            root.configure(bg=_BG)
 
             sw = root.winfo_screenwidth()
-            x  = sw - 610
-            root.geometry(f'600x80+{x}+10')
-            print(f"[Overlay] window created at x={x} y=10", flush=True)
-
-            # Force HWND_TOPMOST via Win32 as well
-            hwnd = ctypes.windll.user32.FindWindowW(None, "")
-            HWND_TOPMOST = -1
-            SWP_FLAGS = 0x0010 | 0x0001 | 0x0002  # NOACTIVATE | NOSIZE | NOMOVE
-            ctypes.windll.user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
-            print(f"[Overlay] hwnd={hwnd}, HWND_TOPMOST set", flush=True)
+            W, H = 620, 128
+            x = sw - W - 10
+            root.geometry(f'{W}x{H}+{x}+10')
+            print(f"[Overlay] window {W}x{H} at x={x}", flush=True)
 
             # ── Widgets ──────────────────────────────────────────────────────
+            # Row 0: recording indicator | title | mute button
+            rec_lbl = tk.Label(root, text="", fg=_RED, bg=_BG,
+                               font=('Courier New', 10, 'bold'))
+            rec_lbl.place(x=8, y=6)
+
             title_lbl = tk.Label(root, text="THE DISPATCH",
-                                 fg='orange', bg='black', font=('Arial', 11, 'bold'))
-            title_lbl.place(x=450, y=5)
+                                 fg=_AMBER, bg=_BG,
+                                 font=('Courier New', 10, 'bold'))
+            title_lbl.place(x=220, y=6)
 
-            rec_lbl = tk.Label(root, text="",
-                               fg='red', bg='black', font=('Arial', 10, 'bold'))
-            rec_lbl.place(x=10, y=5)
+            # Mute toggle — clicking silences TTS
+            mute_var = tk.BooleanVar(value=False)
+            mute_lbl = tk.Label(root, text="[ MUTE ]",
+                                fg=_DIM, bg=_BG,
+                                font=('Courier New', 9, 'bold'),
+                                cursor='hand2')
+            mute_lbl.place(x=512, y=6)
 
-            job_lbl = tk.Label(root, text="",
-                               fg='yellow', bg='black', font=('Arial', 10))
-            job_lbl.place(x=10, y=28)
+            def _toggle_mute(_event=None):
+                muted = not mute_var.get()
+                mute_var.set(muted)
+                mute_lbl.config(fg=_RED if muted else _DIM,
+                                text='[MUTED]' if muted else '[ MUTE ]')
+                try:
+                    import assistant
+                    assistant._set_tts_muted(muted)
+                except Exception:
+                    pass
 
-            dispatch_lbl = tk.Label(root, text="",
-                                    fg='white', bg='black', font=('Arial', 9))
-            dispatch_lbl.place(x=10, y=52)
+            mute_lbl.bind('<Button-1>', _toggle_mute)
 
-            print("[Overlay] entering update loop", flush=True)
+            # Row 1: transcript of what the driver said (shown for _TRANSCRIPT_TTL seconds)
+            transcript_lbl = tk.Label(root, text="", fg=_GREEN, bg=_BG,
+                                      font=('Courier New', 9),
+                                      anchor='w', wraplength=596)
+            transcript_lbl.place(x=8, y=28)
 
-            # ── Update loop (runs on the Tk thread via after()) ───────────────
+            # Row 2: current job summary
+            job_lbl = tk.Label(root, text="", fg='#f0c040', bg=_BG,
+                               font=('Courier New', 9), anchor='w')
+            job_lbl.place(x=8, y=54)
+
+            # Row 3: last dispatcher response (up to ~2 lines)
+            dispatch_lbl = tk.Label(root, text="", fg='#d0d8e8', bg=_BG,
+                                    font=('Courier New', 9),
+                                    anchor='w', justify='left',
+                                    wraplength=596)
+            dispatch_lbl.place(x=8, y=78)
+
+            # Separator line under title row
+            sep = tk.Frame(root, bg=_AMBER, height=1)
+            sep.place(x=0, y=24, width=W)
+
+            print("[Overlay] widgets created, entering update loop", flush=True)
+
+            # ── Update loop ───────────────────────────────────────────────────
             def update():
                 try:
-                    # Re-assert topmost every tick
                     root.attributes('-topmost', True)
                     root.lift()
 
                     # Recording indicator
-                    rec_lbl.config(text="● REC" if overlay_state.get("recording") else "")
+                    rec_lbl.config(
+                        text='● REC' if overlay_state.get('recording') else ''
+                    )
+
+                    # Transcript — show briefly then fade
+                    txt = overlay_state.get('last_transcript', '')
+                    age = time.monotonic() - overlay_state.get('transcript_time', 0)
+                    if txt and age < _TRANSCRIPT_TTL:
+                        display = f'YOU: {txt[:100]}{"…" if len(txt) > 100 else ""}'
+                        transcript_lbl.config(text=display)
+                    else:
+                        transcript_lbl.config(text='')
 
                     # Job info
-                    job = overlay_state.get("current_job")
+                    job = overlay_state.get('current_job')
                     if job:
+                        cargo = job.get('cargo', '—').replace('_', ' ')
+                        dest  = job.get('destination', '—')
+                        dist  = job.get('distance_miles', 0)
                         job_lbl.config(
-                            text=f"JOB: {job.get('cargo', '—')} → {job.get('destination', '—')}"
-                                 f"  |  ${job.get('income', 0):,}  |  {job.get('distance_miles', 0)} mi"
+                            text=f'JOB  {cargo}  →  {dest}  |  {dist} mi'
                         )
                     else:
-                        job_lbl.config(text="No active job")
+                        job_lbl.config(text='No active job')
 
-                    # Last dispatcher response
-                    last = overlay_state.get("last_response", "")
-                    if last:
-                        display = last[:80] + ("..." if len(last) > 80 else "")
-                        dispatch_lbl.config(text=f"DISPATCH: {display}")
+                    # Dispatcher response
+                    resp = overlay_state.get('last_response', '')
+                    if resp:
+                        # Trim to ~200 chars; wraplength handles line breaks
+                        display = resp[:200] + ('…' if len(resp) > 200 else '')
+                        dispatch_lbl.config(text=f'DISPATCH  {display}')
                     else:
-                        dispatch_lbl.config(text="")
+                        dispatch_lbl.config(text='')
 
                 except Exception:
                     pass

@@ -327,279 +327,6 @@ def _filter_market(market: list, prefs: dict) -> list:
     return [j for _, j in results]
 
 
-def build_context(telemetry: dict, snapshot: dict, freight_market: list,
-                  prefs: dict, session_start_snap: dict) -> str:
-    """Build a compact context string (~800-1200 tokens) for Claude's system prompt."""
-    lines = []
-
-    if telemetry:
-        spd  = telemetry.get('speed_kmh', 0)
-        fuel = telemetry.get('fuel_pct', 0)
-        gear = telemetry.get('gear', 0)
-        cargo = telemetry.get('cargo', '')
-        truck = f"{telemetry.get('truck_make', '')} {telemetry.get('truck_model', '')}".strip()
-        line  = f"LIVE: {spd:.0f} km/h | Gear {gear} | Fuel {fuel:.0f}%"
-        if cargo:
-            line += f" | Cargo: {cargo}"
-        if truck:
-            line += f" | Truck: {truck}"
-        lines.append(line)
-
-    fin = snapshot.get('finances', {})
-    if fin:
-        money = fin.get('money', 0)
-        debt  = fin.get('total_debt', 0)
-        net   = money - debt
-        lines.append(
-            f"FINANCES: Cash {_fmt_money(money)} | Debt {_fmt_money(debt)} | Net {_fmt_money(net)}"
-        )
-
-    drivers = snapshot.get('drivers', [])
-    if drivers:
-        on_job = [d for d in drivers if d.get('state') == 2]
-        idle   = [d for d in drivers if d.get('state') != 2]
-        lines.append(f"FLEET: {len(drivers)} drivers | {len(on_job)} on job | {len(idle)} idle")
-        if idle:
-            idle_info = [
-                f"Unit {d.get('id','').replace('driver.','')}"
-                f" in {d.get('current_city','').replace('_',' ').title()}"
-                for d in idle[:4]
-            ]
-            lines.append("IDLE: " + ", ".join(idle_info))
-
-    jobs = snapshot.get('jobs', [])
-    if jobs:
-        total_rev_5 = sum(j.get('revenue', 0) for j in jobs[:5])
-        lines.append(f"RECENT (last 5 jobs): {_fmt_money(total_rev_5)} earned")
-        for j in jobs[:3]:
-            src  = j.get('source_city', '').replace('_', ' ').title()
-            dst  = j.get('destination_city', '').replace('_', ' ').title()
-            cargo = j.get('cargo', '').replace('_', ' ')
-            lines.append(f"  {src} → {dst} | {_fmt_money(j.get('revenue',0))} | {cargo}")
-
-    # Session delta
-    if session_start_snap and snapshot:
-        n0 = len(session_start_snap.get('jobs', []))
-        n1 = len(snapshot.get('jobs', []))
-        if n1 > n0:
-            sess_rev = sum(j.get('revenue', 0) for j in snapshot['jobs'][:n1 - n0])
-            lines.append(f"THIS SESSION: {n1 - n0} jobs | {_fmt_money(sess_rev)} earned")
-
-    # Freight market (top filtered jobs)
-    if freight_market:
-        filtered = _filter_market(freight_market, prefs)
-        lines.append(f"FREIGHT MARKET ({len(freight_market)} available, top matches):")
-        for j in filtered[:5]:
-            src  = j.get('source_city', '')
-            dst  = j.get('destination_city', '')
-            rev  = j.get('revenue', 0)
-            dist = j.get('distance_km', 0)
-            cargo = j.get('cargo', '')
-            lines.append(f"  {src} → {dst} | {_fmt_money(rev)} | {dist} km | {cargo}")
-    elif not freight_market:
-        lines.append("FREIGHT MARKET: No market data — sync save file to populate.")
-
-    # Preferences summary
-    pref_parts = []
-    if prefs.get('preferred_cargo'):
-        pref_parts.append(f"preferred cargo: {', '.join(prefs['preferred_cargo'])}")
-    if prefs.get('avoided_cargo'):
-        pref_parts.append(f"avoid: {', '.join(prefs['avoided_cargo'])}")
-    if prefs.get('preferred_min_revenue'):
-        pref_parts.append(f"min revenue: {_fmt_money(prefs['preferred_min_revenue'])}")
-    if prefs.get('notes'):
-        pref_parts.append(f"notes: {prefs['notes']}")
-    if pref_parts:
-        lines.append("PREFERENCES: " + " | ".join(pref_parts))
-
-    # In-game time
-    player = snapshot.get('player', {})
-    gm = player.get('game_time_minutes', 0)
-    if gm:
-        days  = gm // (60 * 24)
-        hours = (gm % (60 * 24)) // 60
-        mins  = gm % 60
-        lines.append(f"IN-GAME: Day {days}, {hours:02d}:{mins:02d}")
-
-    return '\n'.join(lines)
-
-
-# ── Snapshot summariser ───────────────────────────────────────────────────────
-
-def build_context_summary(snapshot: dict, telemetry: dict | None = None) -> str:
-    if not snapshot:
-        return "No game data loaded."
-
-    telemetry = telemetry or {}
-    ctx: dict = {}
-    ctx["money"] = snapshot.get("finances", {}).get("money", "unknown")
-
-    # ── Live telemetry — ground truth, updated every 2 s from SCS SDK ─────────
-    live_cargo      = (telemetry.get("cargo") or "").strip()
-    live_cargo_mass = float(telemetry.get("cargo_mass") or 0)
-    log.info(f"TELEMETRY: cargo={live_cargo!r}, cargo_mass={live_cargo_mass}")
-
-    # ── Save-file fields (may lag by up to one autosave cycle) ───────────────
-    player = snapshot.get("player", {}) or {}
-    log.info(f"SNAP_PLAYER (full): {player!r}")
-
-    trailer           = snapshot.get("trailer", {}) or {}
-    active_destination = trailer.get("active_destination", "") or ""
-    trailer_attached   = bool(trailer.get("id"))
-
-    # ── Active job detection ──────────────────────────────────────────────────
-    # Priority 1 (live): telemetry cargo_mass > 0 or cargo string non-empty.
-    # Priority 2 (save): job_info_cargo + job_info_planned_distance_km both set
-    #   and non-zero — more reliable than in_job which can lag or be absent.
-    job_info_cargo_raw = (player.get("job_info_cargo") or "").strip()
-    try:
-        job_info_dist_raw = int(player.get("job_info_planned_distance_km") or 0)
-    except (TypeError, ValueError):
-        job_info_dist_raw = 0
-
-    if live_cargo_mass > 0 or bool(live_cargo):
-        has_active_job = True
-        log.info(
-            f"ACTIVE JOB DETECTION: telemetry cargo={live_cargo!r} "
-            f"mass={live_cargo_mass} -> has_active_job=True (live)"
-        )
-    elif (job_info_cargo_raw and job_info_cargo_raw not in ("null", "nil")
-          and job_info_dist_raw > 0):
-        has_active_job = True
-        log.info(
-            f"ACTIVE JOB DETECTION: job_info_cargo={job_info_cargo_raw!r} "
-            f"dist={job_info_dist_raw} -> has_active_job=True (save)"
-        )
-    else:
-        has_active_job = False
-        log.info(
-            f"ACTIVE JOB DETECTION: no live cargo, job_info_cargo={job_info_cargo_raw!r} "
-            f"dist={job_info_dist_raw} -> has_active_job=False"
-        )
-
-    ctx["trailer_attached"] = trailer_attached
-    ctx["has_active_job"]   = has_active_job
-
-    # ── Raw data ──────────────────────────────────────────────────────────────
-    freight_market = snapshot.get("freight_market", [])
-    if isinstance(freight_market, dict):
-        freight_market = freight_market.get("offers", [])
-    if not isinstance(freight_market, list):
-        freight_market = []
-
-    owned_trailers = snapshot.get("owned_trailers", [])   # [{body_type, label}, ...]
-    if not isinstance(owned_trailers, list):
-        owned_trailers = []
-
-    trailer_body_type = trailer.get("body_type")  # current trailer type
-
-    log.info(f"SNAP_FM_RAW[:1]: {freight_market[:1]!r}")
-    log.info(f"SNAP_OWNED_TRAILERS: {owned_trailers!r}")
-    log.info(f"trailer_body_type={trailer_body_type!r}")
-
-    # Import the body-type matching helper from parser
-    try:
-        from parser import job_matches_body_type
-    except ImportError:
-        job_matches_body_type = None
-
-    def _filter_by_body_type(jobs: list, body_type: str) -> list:
-        if not body_type or not job_matches_body_type:
-            return jobs
-        matched = [j for j in jobs if job_matches_body_type(j.get("trailer_def", ""), body_type)]
-        return matched if matched else jobs  # fall back if nothing matches
-
-    # ── Job source logic ──────────────────────────────────────────────────────
-    if has_active_job:
-        # Cargo: prefer live telemetry (always current); fall back to save-file field.
-        job_cargo = live_cargo or player.get("job_info_cargo") or "unknown"
-
-        # Destination: save-file job_info_target is correct during an active job
-        # (unlike active_destination which persists post-delivery).
-        job_target  = player.get("job_info_target") or active_destination or ""
-        job_dist_km = int(player.get("job_info_planned_distance_km") or 0)
-        job_urgency = player.get("job_info_urgency", "0") or "0"
-
-        dest_parts = job_target.split(".") if job_target else []
-        dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else "unknown"
-        company    = dest_parts[1].replace("_", " ").title() if len(dest_parts) > 1 else ""
-
-        ctx["current_job"] = {
-            "cargo":          job_cargo,
-            "destination":    dest_city,
-            "company":        company,
-            "distance_miles": round(job_dist_km * 0.621371),
-            "urgency":        job_urgency,
-        }
-        ctx["job_status"] = "ACTIVE_LOAD: Driver is on an active job. Do not list new jobs."
-        candidates = []   # suppress — driver already has a load
-        log.info(
-            f"Job source: active job -> cargo={job_cargo!r} (live={live_cargo!r}), "
-            f"dest={dest_city!r}, {round(job_dist_km * 0.621371)} mi"
-        )
-
-    elif trailer_attached and trailer_body_type:
-        # Trailer attached, no active job — filter freight market by this body type
-        ctx["current_job"] = None
-        candidates = _filter_by_body_type(freight_market, trailer_body_type)
-        log.info(
-            f"Job source: trailer attached (body_type={trailer_body_type!r}), "
-            f"fm_matches={len(candidates)} of {len(freight_market)}"
-        )
-
-    else:
-        # No trailer (or unknown type) → full freight market
-        ctx["current_job"] = None
-        candidates = freight_market
-        log.info(f"Job source: no trailer/body_type → freight_market ({len(freight_market)} offers)")
-
-    # Expose owned trailer types so Claude can answer "what can I take with my flatbed?"
-    if owned_trailers:
-        ctx["owned_trailers"] = list({t.get("label", t.get("body_type", ""))
-                                      for t in owned_trailers if t.get("body_type")})
-
-    # ── Shared fields ─────────────────────────────────────────────────────────
-    ctx["current_city"] = (
-        snapshot.get("current_city")
-        or snapshot.get("city")
-        or (candidates[0].get("source_city") if candidates else None)
-        or "unknown"
-    )
-
-    top_jobs = sorted(
-        [j for j in candidates if isinstance(j, dict)],
-        key=lambda x: x.get("revenue", 0),
-        reverse=True,
-    )[:10]
-
-    ctx["units"] = "miles, USD"
-
-    # When actively on a job, candidates is already [] so top_jobs is [] too.
-    # Be explicit so Claude sees an empty list and knows not to list new runs.
-    if has_active_job:
-        ctx["top_freight_jobs"] = []
-    else:
-        ctx["top_freight_jobs"] = [
-            {
-                "cargo":              j.get("cargo", "unknown"),
-                "source":             j.get("source_city", "?"),
-                "destination":        j.get("destination_city", "?"),
-                "income":             j.get("revenue", 0),
-                "distance":           round(int(j.get("distance_km", 0)) * 0.621371),
-                "market":             j.get("market", "unknown"),
-                "trailer_cargo_type": j.get("trailer_cargo_type"),
-            }
-            for j in top_jobs
-        ]
-
-    ctx["drivers"] = [
-        {"name": d.get("name"), "city": d.get("city"), "status": d.get("status")}
-        for d in snapshot.get("drivers", [])[:5]
-    ]
-
-    return json.dumps(ctx, indent=2)
-
-
 # ── Tool handlers ─────────────────────────────────────────────────────────────
 
 def handle_tool_call(tool_name: str, tool_input: dict, snapshot: dict, telemetry: dict):
@@ -775,7 +502,31 @@ def _tool_finances(snapshot: dict) -> dict:
 
 
 def _tool_nearby_stops(tool_input: dict, telemetry: dict) -> dict:
-    return {"message": "Feature coming soon — truck stop database not loaded yet."}
+    stop_type = tool_input.get("stop_type", "fuel")
+    pos_x = telemetry.get("pos_x", 0)
+    pos_z = telemetry.get("pos_z", 0)
+
+    if not city_db or (pos_x == 0 and pos_z == 0):
+        return {"message": f"No GPS position available — check in-game map (F8) for {stop_type} stops."}
+
+    ranked = []
+    for c in city_db.values():
+        cx = c.get('x')
+        cz = c.get('z')
+        if cx is None or cz is None:
+            continue
+        d2 = (pos_x - cx) ** 2 + (pos_z - cz) ** 2
+        name  = c.get('name', '?')
+        state = c.get('state', '')
+        ranked.append((d2, f"{name}, {state}" if state else name))
+    ranked.sort(key=lambda x: x[0])
+
+    nearby = [label for _, label in ranked[:4]]
+    return {
+        "stop_type":      stop_type,
+        "nearest_cities": nearby,
+        "note":           "Exact stop locations shown on in-game map (F8). These are the closest cities by GPS.",
+    }
 
 
 # ── Claude API ────────────────────────────────────────────────────────────────

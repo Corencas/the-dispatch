@@ -32,6 +32,13 @@ def get_telemetry():
             'cargo': data.get('cargo', ''),
             'cargo_mass': round(data.get('cargoMass', 0), 1),
             'odometer': round(data.get('odometer', 0), 1),
+            # World-space GPS coordinates (SCS SDK X/Z = horizontal plane)
+            'pos_x': round(data.get('coordinateX', 0), 1),
+            'pos_z': round(data.get('coordinateZ', 0), 1),
+            # Live job city names from SDK (empty string when not on a job)
+            'nav_dst_city': (data.get('cityDst') or '').strip(),
+            'nav_src_city': (data.get('citySrc') or '').strip(),
+            'on_job': bool(data.get('onJob', False)),
         }
     except Exception as e:
         return None

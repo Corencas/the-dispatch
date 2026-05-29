@@ -101,8 +101,10 @@ def parse_finances(content):
 
     money = re.search(r'money_account:\s*(-?\d+)', content)
     raw_money = money.group(1) if money else None
-    _log.info(f"parse_finances: raw money_account={raw_money!r}")
-    finances['money'] = int(raw_money) if raw_money is not None else 0
+    # int() preserves the negative sign — no abs() used here intentionally
+    money_int = int(raw_money) if raw_money is not None else 0
+    _log.info(f"parse_finances: money_account raw_str={raw_money!r} -> int={money_int}")
+    finances['money'] = money_int
 
     loan_limit = re.search(r'loan_limit:\s*(\d+)', content)
     finances['loan_limit'] = int(loan_limit.group(1)) if loan_limit else 0

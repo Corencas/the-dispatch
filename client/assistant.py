@@ -65,7 +65,10 @@ SYSTEM_PROMPT = (
     "You are a gruff CB radio dispatcher for ATS/ETS2. Use the available tools to answer "
     "questions accurately. Never guess or make up job details — always call the appropriate "
     "tool. Speak naturally, no symbols, 1-3 sentences for simple answers, fluid speech for "
-    "job lists. Use trucker lingo naturally."
+    "job lists. Use trucker lingo naturally. "
+    "IMPORTANT: 'garage_city' in context is the driver's home base, NOT current position. "
+    "When active_job=True use nav_dst as destination and treat the driver as en route. "
+    "Use nav_src/nav_dst cities for actual location context, not garage_city."
 )
 
 TOOLS = [
@@ -808,26 +811,27 @@ def query_claude(user_message: str, prefs: dict,
     # ── Diagnostic logging — runs on every query ─────────────────────────────
     player = snapshot.get("player", {}) or {}
     log.info(f"DIAG player (full): {player!r}")
-    log.info(f"DIAG snapshot.cities={snapshot.get('cities')!r}")
-    log.info(f"DIAG snapshot.current_city={snapshot.get('current_city')!r}")
-    log.info(f"DIAG snapshot.city={snapshot.get('city')!r}")
-    first_job = (snapshot.get("jobs") or [{}])[0]
-    log.info(f"DIAG jobs[0].source_city={first_job.get('source_city')!r}")
-    log.info(f"DIAG telemetry keys={list(telemetry.keys()) if telemetry else []!r}")
+    log.info(f"DIAG telemetry pos=({telemetry.get('pos_x')},{telemetry.get('pos_z')}) "
+             f"nav_src={telemetry.get('nav_src_city')!r} nav_dst={telemetry.get('nav_dst_city')!r} "
+             f"on_job={telemetry.get('on_job')}")
 
     # ── Minimal system context (no big JSON dump) ─────────────────────────────
-    # City: try player.current_city (parsed from save), then snapshot top-level,
-    # then fall back to first completed job's source city.
-    current_city = (
+    # garage_city = home base from save file (NOT current truck position)
+    garage_city = (
         player.get("current_city")
         or snapshot.get("current_city")
         or snapshot.get("city")
-        or first_job.get("source_city")
         or "unknown"
     )
 
     trailer = snapshot.get("trailer", {}) or {}
     trailer_type = trailer.get("body_type") or "unknown"
+
+    # Live nav cities from telemetry SDK (most accurate location data)
+    nav_dst_city = telemetry.get("nav_dst_city") or ""
+    nav_src_city = telemetry.get("nav_src_city") or ""
+    pos_x        = telemetry.get("pos_x", 0)
+    pos_z        = telemetry.get("pos_z", 0)
 
     # Active job detection — job_info_cargo + job_info_planned_distance_km are
     # more reliable than in_job which can lag or be absent in save files.
@@ -849,13 +853,24 @@ def query_claude(user_message: str, prefs: dict,
         f"-> has_active_job={has_active_job}"
     )
 
+    # Build driver context string for Claude's system note
+    if has_active_job:
+        job_target = player.get("job_info_target") or ""
+        dest_parts = job_target.split(".") if job_target else []
+        dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else nav_dst_city or "unknown"
+        location_ctx = f"en_route_to={dest_city}"
+    else:
+        location_ctx = f"garage_city={garage_city}"
+
     system = (
         f"{SYSTEM_PROMPT}\n\n"
-        f"Driver context: city={current_city}, trailer={trailer_type}, active_job={has_active_job}"
+        f"Driver context: {location_ctx}, nav_src={nav_src_city or 'none'}, "
+        f"nav_dst={nav_dst_city or 'none'}, pos=({pos_x:.0f},{pos_z:.0f}), "
+        f"trailer={trailer_type}, active_job={has_active_job}"
     )
 
     log.info(f"Claude: user_message={user_message!r}")
-    log.info(f"Claude: context city={current_city!r} trailer={trailer_type!r} active_job={has_active_job}")
+    log.info(f"Claude: context {location_ctx} trailer={trailer_type!r} active_job={has_active_job}")
 
     with _conv_lock:
         recent = list(_conv_history[-6:])

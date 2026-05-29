@@ -94,10 +94,15 @@ def parse_sii(filepath):
 
 
 def parse_finances(content):
+    import logging
+    _log = logging.getLogger('parser')
+
     finances = {}
 
     money = re.search(r'money_account:\s*(-?\d+)', content)
-    finances['money'] = int(money.group(1)) if money else 0
+    raw_money = money.group(1) if money else None
+    _log.info(f"parse_finances: raw money_account={raw_money!r}")
+    finances['money'] = int(raw_money) if raw_money is not None else 0
 
     loan_limit = re.search(r'loan_limit:\s*(\d+)', content)
     finances['loan_limit'] = int(loan_limit.group(1)) if loan_limit else 0
@@ -212,6 +217,9 @@ def parse_owned_trailers(content: str) -> list[dict]:
 def parse_player(content):
     player = {}
 
+    import logging
+    _log = logging.getLogger('parser')
+
     # Search globally for in_job — it lives inside the large economy block but
     # that block contains many nested sub-blocks so we don't try to bound it.
     # SII files store booleans as the strings 'true'/'false'; also handle 1/0.
@@ -220,6 +228,11 @@ def parse_player(content):
         player['in_job'] = in_job_m.group(1).lower() in ('true', '1')
     else:
         player['in_job'] = False  # field absent → not in job
+
+    # Search globally for current_city — present in the economy block near the top
+    city_m = re.search(r'\bcurrent_city\s*:\s*"?([^"\s\n]+)"?', content)
+    player['current_city'] = city_m.group(1).strip() if city_m else None
+    _log.info(f"parse_player: in_job={player['in_job']!r}, current_city={player['current_city']!r}")
 
     # Economy block — grab the stats fields we care about.
     # NOTE: the economy block is huge (contains nested blocks) so the regex may

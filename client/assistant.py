@@ -614,7 +614,6 @@ def _tool_job_recommendations(tool_input: dict, snapshot: dict) -> dict:
     if not isinstance(freight_market, list):
         freight_market = []
 
-    # Filter by current trailer body type when attached
     trailer = snapshot.get("trailer", {}) or {}
     trailer_body_type = trailer.get("body_type")
     try:
@@ -622,11 +621,26 @@ def _tool_job_recommendations(tool_input: dict, snapshot: dict) -> dict:
     except ImportError:
         _jmbt = None
 
-    candidates = freight_market
-    if trailer_body_type and _jmbt:
-        matched = [j for j in freight_market if _jmbt(j.get("trailer_def", ""), trailer_body_type)]
+    total = len(freight_market)
+    fallback_note = None
+
+    if trailer_body_type:
+        matched = [
+            j for j in freight_market
+            if j.get("body_type") == trailer_body_type
+            or trailer_body_type in (j.get("trailer_def") or "")
+            or (bool(_jmbt) and _jmbt(j.get("trailer_def", ""), trailer_body_type))
+        ]
+        log.info(f"Tool job_recommendations: trailer={trailer_body_type!r}, matched={len(matched)}/{total}")
         if matched:
             candidates = matched
+        else:
+            log.info("Tool job_recommendations: zero trailer matches — falling back to full market")
+            candidates = freight_market
+            fallback_note = f"No trailer-specific jobs found for {trailer_body_type}, showing general market."
+    else:
+        log.info(f"Tool job_recommendations: no trailer type — using full market ({total} jobs)")
+        candidates = freight_market
 
     filtered = _filter_market(candidates, prefs)
 
@@ -651,7 +665,7 @@ def _tool_job_recommendations(tool_input: dict, snapshot: dict) -> dict:
     if not top:
         return {"jobs": [], "message": "No matching jobs in freight market."}
 
-    return {
+    result: dict = {
         "jobs": [
             {
                 "cargo":          j.get("cargo", "unknown"),
@@ -664,6 +678,9 @@ def _tool_job_recommendations(tool_input: dict, snapshot: dict) -> dict:
             for j in top
         ]
     }
+    if fallback_note:
+        result["note"] = fallback_note
+    return result
 
 
 def _tool_truck_status(telemetry: dict) -> dict:
@@ -727,6 +744,7 @@ def _tool_finances(snapshot: dict) -> dict:
     jobs = snapshot.get("jobs", [])
     money = fin.get("money", 0)
     debt  = fin.get("total_debt", 0)
+    log.info(f"Tool finances: raw money={money!r}, raw debt={debt!r}")
     return {
         "cash":                   money,
         "debt":                   debt,
@@ -836,10 +854,9 @@ def query_claude(user_message: str, prefs: dict,
             )
             log.info(f"Claude: follow-up stop_reason={resp.stop_reason}")
 
-        text = next(
-            (block.text for block in resp.content if hasattr(block, 'text')),
-            _FALLBACK['api_error'],
-        ).strip()
+        text = " ".join(
+            block.text for block in resp.content if hasattr(block, 'text')
+        ).strip() or _FALLBACK['api_error']
 
         log.info(f"Claude: received {len(text)} chars")
 

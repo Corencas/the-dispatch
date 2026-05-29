@@ -62,32 +62,58 @@ PERSONALITIES = {
 }
 
 SYSTEM_PROMPT = (
-    "You are a gruff truck dispatcher on CB radio. Natural spoken voice only — no symbols, "
-    "no arrows, no formatting.\n\n"
-    "For job listings, keep it tight. One short sentence per job: cargo, destination, pay. "
-    "Max 3 jobs. Example: \"Best paying right now is home accessories to Fredericton, two "
-    "hundred and five thousand dollars. Got a Darkwing run to Rd1, one ninety thousand. "
-    "Sand to Jacksonville, one eighty-six thousand.\"\n\n"
-    "You will be given a list of jobs. Each job includes which market it came from. Group "
-    "jobs by market when listing them. Say which market they're from: 'cargo market', "
-    "'freight market', or 'quick jobs'. Example: 'Best three are out of the cargo market "
-    "— home accessories to Fredericton, two hundred and five thousand dollars. Darkwing to "
-    "Rd1...' If all from the same market, just say it once upfront.\n\n"
-    "For all other questions: 1-2 sentences max.\n\n"
-    "Distances are in miles — say \"miles\" not \"klicks\". Use trucker lingo naturally. "
-    "Always say the full dollar amount out loud. Say \"two hundred and five thousand dollars\" "
-    "not \"two oh five thousand\". Never abbreviate pay amounts. "
-    "Stop talking the moment the info is delivered.\n\n"
-    "You will be told if the driver already has an active load. If they ask what jobs are "
-    "available, lead with a one-sentence reminder that they're already loaded, then list "
-    "the available options anyway. Never refuse to list jobs.\n\n"
-    "top_freight_jobs contains available jobs. Cargo-market jobs (owned trailers) have a "
-    "'trailer_cargo_type' field and 'market':'cargo_market'. Freight-market jobs use "
-    "company trailers. owned_trailers lists every trailer the driver owns by cargo_type. "
-    "When the driver asks about jobs for a specific trailer they mention (flatbed, reefer, "
-    "curtain, etc.), find the matching cargo_type in owned_trailers and filter "
-    "top_freight_jobs to that trailer_cargo_type."
+    "You are a gruff CB radio dispatcher for ATS/ETS2. Use the available tools to answer "
+    "questions accurately. Never guess or make up job details — always call the appropriate "
+    "tool. Speak naturally, no symbols, 1-3 sentences for simple answers, fluid speech for "
+    "job lists. Use trucker lingo naturally."
 )
+
+TOOLS = [
+    {
+        "name": "get_job_recommendations",
+        "description": "Get the best available freight jobs for the driver's current trailer and location",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filter_region": {"type": "string", "description": "Optional region/state to filter jobs by source city. Empty for all."},
+                "sort_by": {"type": "string", "enum": ["income", "efficiency", "distance"], "description": "How to rank jobs"},
+                "limit": {"type": "integer", "description": "Max jobs to return, default 3"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_truck_status",
+        "description": "Get current truck telemetry: fuel level, speed, engine status, odometer",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_current_job",
+        "description": "Get details about the driver's active delivery job",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_fleet_status",
+        "description": "Get status of all hired drivers in the fleet",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_finances",
+        "description": "Get current company finances: cash, loans, revenue",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "find_nearby_stops",
+        "description": "Find nearby fuel stations, rest stops, or dealerships based on current location",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "stop_type": {"type": "string", "enum": ["fuel", "rest", "dealership", "service"], "description": "Type of stop to find"},
+            },
+            "required": ["stop_type"],
+        },
+    },
+]
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -561,6 +587,158 @@ def build_context_summary(snapshot: dict, telemetry: dict | None = None) -> str:
     return json.dumps(ctx, indent=2)
 
 
+# ── Tool handlers ─────────────────────────────────────────────────────────────
+
+def handle_tool_call(tool_name: str, tool_input: dict, snapshot: dict, telemetry: dict):
+    if tool_name == "get_job_recommendations":
+        return _tool_job_recommendations(tool_input, snapshot)
+    elif tool_name == "get_truck_status":
+        return _tool_truck_status(telemetry)
+    elif tool_name == "get_current_job":
+        return _tool_current_job(snapshot)
+    elif tool_name == "get_fleet_status":
+        return _tool_fleet_status(snapshot)
+    elif tool_name == "get_finances":
+        return _tool_finances(snapshot)
+    elif tool_name == "find_nearby_stops":
+        return _tool_nearby_stops(tool_input, telemetry)
+    return {"error": f"Unknown tool: {tool_name}"}
+
+
+def _tool_job_recommendations(tool_input: dict, snapshot: dict) -> dict:
+    prefs = load_prefs()
+
+    freight_market = snapshot.get("freight_market", [])
+    if isinstance(freight_market, dict):
+        freight_market = freight_market.get("offers", [])
+    if not isinstance(freight_market, list):
+        freight_market = []
+
+    # Filter by current trailer body type when attached
+    trailer = snapshot.get("trailer", {}) or {}
+    trailer_body_type = trailer.get("body_type")
+    try:
+        from parser import job_matches_body_type as _jmbt
+    except ImportError:
+        _jmbt = None
+
+    candidates = freight_market
+    if trailer_body_type and _jmbt:
+        matched = [j for j in freight_market if _jmbt(j.get("trailer_def", ""), trailer_body_type)]
+        if matched:
+            candidates = matched
+
+    filtered = _filter_market(candidates, prefs)
+
+    # Optional region filter
+    region = (tool_input.get("filter_region") or "").lower().strip()
+    if region:
+        filtered = [j for j in filtered if region in j.get("source_city", "").lower()]
+
+    sort_by = tool_input.get("sort_by", "income")
+    if sort_by == "distance":
+        filtered.sort(key=lambda j: j.get("distance_km", 0))
+    elif sort_by == "efficiency":
+        filtered.sort(
+            key=lambda j: j.get("revenue", 0) / max(j.get("distance_km", 1), 1),
+            reverse=True,
+        )
+    # "income" is already sorted descending by _filter_market
+
+    limit = tool_input.get("limit", 3)
+    top = filtered[:limit]
+
+    if not top:
+        return {"jobs": [], "message": "No matching jobs in freight market."}
+
+    return {
+        "jobs": [
+            {
+                "cargo":          j.get("cargo", "unknown"),
+                "source":         j.get("source_city", "?"),
+                "destination":    j.get("destination_city", "?"),
+                "income":         j.get("revenue", 0),
+                "distance_miles": round(int(j.get("distance_km", 0)) * 0.621371),
+                "market":         j.get("market", "unknown"),
+            }
+            for j in top
+        ]
+    }
+
+
+def _tool_truck_status(telemetry: dict) -> dict:
+    speed_kmh = telemetry.get("speed_kmh", 0)
+    fuel_pct  = telemetry.get("fuel_pct", 0)
+    truck = f"{telemetry.get('truck_make', '')} {telemetry.get('truck_model', '')}".strip()
+    return {
+        "speed_mph":      round(speed_kmh * 0.621371),
+        "fuel_pct":       round(float(fuel_pct)),
+        "gear":           telemetry.get("gear", 0),
+        "engine_on":      telemetry.get("engine_on", False),
+        "odometer_miles": round(telemetry.get("odometer_km", 0) * 0.621371),
+        "cargo":          telemetry.get("cargo", ""),
+        "truck":          truck or "unknown",
+    }
+
+
+def _tool_current_job(snapshot: dict) -> dict:
+    player = snapshot.get("player", {}) or {}
+    trailer = snapshot.get("trailer", {}) or {}
+
+    if not player.get("in_job"):
+        return {"active": False, "message": "No active job."}
+
+    job_target  = player.get("job_info_target") or trailer.get("active_destination") or ""
+    job_dist_km = int(player.get("job_info_planned_distance_km") or 0)
+    job_cargo   = player.get("job_info_cargo") or "unknown"
+    job_urgency = player.get("job_info_urgency", "0") or "0"
+
+    dest_parts = job_target.split(".") if job_target else []
+    dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else "unknown"
+    company    = dest_parts[1].replace("_", " ").title() if len(dest_parts) > 1 else ""
+
+    return {
+        "active":         True,
+        "cargo":          job_cargo,
+        "destination":    dest_city,
+        "company":        company,
+        "distance_miles": round(job_dist_km * 0.621371),
+        "urgency":        job_urgency,
+    }
+
+
+def _tool_fleet_status(snapshot: dict) -> dict:
+    drivers = snapshot.get("drivers", [])
+    return {
+        "total": len(drivers),
+        "drivers": [
+            {
+                "name":   d.get("name", "unknown"),
+                "city":   (d.get("city") or d.get("current_city", "unknown")).replace("_", " ").title(),
+                "status": "on_job" if d.get("state") == 2 else "idle",
+            }
+            for d in drivers[:10]
+        ],
+    }
+
+
+def _tool_finances(snapshot: dict) -> dict:
+    fin  = snapshot.get("finances", {}) or {}
+    jobs = snapshot.get("jobs", [])
+    money = fin.get("money", 0)
+    debt  = fin.get("total_debt", 0)
+    return {
+        "cash":                   money,
+        "debt":                   debt,
+        "net_worth":              money - debt,
+        "recent_5_jobs_revenue":  sum(j.get("revenue", 0) for j in jobs[:5]),
+    }
+
+
+def _tool_nearby_stops(tool_input: dict, telemetry: dict) -> dict:
+    return {"message": "Feature coming soon — truck stop database not loaded yet."}
+
+
 # ── Claude API ────────────────────────────────────────────────────────────────
 
 _anthropic_client: anthropic.Anthropic | None = None
@@ -594,42 +772,84 @@ def query_claude(user_message: str, prefs: dict,
         log.warning("ANTHROPIC_API_KEY not set")
         return _FALLBACK['no_key']
 
-    personality = prefs.get('personality', 'professional')
+    # ── Minimal system context (no big JSON dump) ─────────────────────────────
+    current_city = (
+        snapshot.get("current_city") or snapshot.get("city") or "unknown"
+    )
+    trailer = snapshot.get("trailer", {}) or {}
+    trailer_type = trailer.get("body_type") or "unknown"
 
-    # ── Compact snapshot summary (replaces raw JSON dump) ─────────────────────
-    summary = build_context_summary(snapshot, telemetry=telemetry)
-    full_message = f"Current game data:\n{summary}\n\n{user_message}"
+    player = snapshot.get("player", {}) or {}
+    live_cargo      = (telemetry.get("cargo") or "").strip()
+    live_cargo_mass = float(telemetry.get("cargo_mass") or 0)
+    has_active_job  = bool(live_cargo_mass > 0 or live_cargo or player.get("in_job") is True)
 
-    est_tokens = len(full_message) // 4
+    system = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"Driver context: city={current_city}, trailer={trailer_type}, active_job={has_active_job}"
+    )
+
     log.info(f"Claude: user_message={user_message!r}")
-    log.info(f"Claude: full_message ~{est_tokens} tokens ({len(full_message)} chars)")
+    log.info(f"Claude: context city={current_city!r} trailer={trailer_type!r} active_job={has_active_job}")
 
-    # ── Build messages array with capped history ──────────────────────────────
     with _conv_lock:
-        recent = list(_conv_history[-6:])   # last 6 messages (3 turns)
+        recent = list(_conv_history[-6:])
 
-    messages_payload = recent + [{'role': 'user', 'content': full_message}]
+    messages_payload = recent + [{'role': 'user', 'content': user_message}]
 
     try:
-        log.info(f"Claude: sending request (model=claude-sonnet-4-5, personality={personality}, "
-                 f"history_msgs={len(recent)})")
+        log.info(f"Claude: sending request (model=claude-sonnet-4-6, history_msgs={len(recent)})")
         resp = client.messages.create(
             model='claude-sonnet-4-6',
-            max_tokens=120,
-            system=SYSTEM_PROMPT,
+            max_tokens=400,
+            system=system,
+            tools=TOOLS,
             messages=messages_payload,
         )
-        log.info(f"Claude: raw response content={resp.content!r}")
-        text = resp.content[0].text.strip()
-        log.info(f"Claude: received {len(text)} chars, stop_reason={resp.stop_reason}")
+        log.info(f"Claude: stop_reason={resp.stop_reason}")
 
-        # Persist this turn to in-memory history
+        # ── Agentic tool-use loop ─────────────────────────────────────────────
+        while resp.stop_reason == 'tool_use':
+            tool_results = []
+            for block in resp.content:
+                if block.type == 'tool_use':
+                    log.info(f"Claude: tool_call={block.name} input={block.input!r}")
+                    result = handle_tool_call(block.name, block.input, snapshot, telemetry)
+                    log.info(f"Claude: tool_result={result!r}")
+                    tool_results.append({
+                        'type':        'tool_result',
+                        'tool_use_id': block.id,
+                        'content':     json.dumps(result),
+                    })
+
+            messages_payload = messages_payload + [
+                {'role': 'assistant', 'content': resp.content},
+                {'role': 'user',      'content': tool_results},
+            ]
+
+            resp = client.messages.create(
+                model='claude-sonnet-4-6',
+                max_tokens=400,
+                system=system,
+                tools=TOOLS,
+                messages=messages_payload,
+            )
+            log.info(f"Claude: follow-up stop_reason={resp.stop_reason}")
+
+        text = next(
+            (block.text for block in resp.content if hasattr(block, 'text')),
+            _FALLBACK['api_error'],
+        ).strip()
+
+        log.info(f"Claude: received {len(text)} chars")
+
         with _conv_lock:
-            _conv_history.append({'role': 'user', 'content': full_message})
+            _conv_history.append({'role': 'user',      'content': user_message})
             _conv_history.append({'role': 'assistant', 'content': text})
-            _conv_history = _conv_history[-6:]   # keep at most 6 messages
+            _conv_history = _conv_history[-6:]
 
         return text
+
     except anthropic.APIStatusError as e:
         log.error(f"Claude: APIStatusError status={e.status_code} message={e.message!r}",
                   exc_info=True)

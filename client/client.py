@@ -223,6 +223,29 @@ def push_data(filepath):
         # Check if any proactive briefing triggers fired
         assistant.check_proactive_triggers()
 
+        # Update overlay with current job info from the parsed snapshot
+        try:
+            from overlay import overlay_state
+            player = data.get('player', {}) or {}
+            job_cargo = (player.get('job_info_cargo') or '').strip()
+            try:
+                job_dist_km = int(player.get('job_info_planned_distance_km') or 0)
+            except (TypeError, ValueError):
+                job_dist_km = 0
+            if job_cargo and job_cargo not in ('null', 'nil') and job_dist_km > 0:
+                job_target = player.get('job_info_target') or ''
+                dest_parts = job_target.split('.') if job_target else []
+                dest_city  = dest_parts[-1].replace('_', ' ').title() if dest_parts else 'unknown'
+                overlay_state['current_job'] = {
+                    'cargo':          job_cargo,
+                    'destination':    dest_city,
+                    'distance_miles': round(job_dist_km * 0.621371),
+                }
+            else:
+                overlay_state['current_job'] = None
+        except Exception:
+            pass
+
         response = requests.post(
             f'{SERVER_URL}/api/snapshot',
             json=data,
@@ -445,6 +468,48 @@ def run_auth_flow():
     return auth_result
 
 
+# ── Server preferences sync ───────────────────────────────────────
+
+def _sync_server_prefs(discord_id: str, discord_token: str):
+    """
+    Pull preferences from the server and write to local preferences.json.
+    The server is canonical for settings changed via the web dashboard form.
+    PTT_KEY from .env always wins (applied separately in load_prefs).
+    """
+    if not discord_id or not discord_token:
+        return
+    try:
+        resp = requests.get(
+            f'{SERVER_URL}/api/preferences/{discord_id}',
+            headers={'Authorization': f'Bearer {discord_token}'},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            return
+        server_prefs = resp.json()
+        if not isinstance(server_prefs, dict):
+            return
+
+        prefs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'preferences.json')
+        import json
+        local_prefs = {}
+        if os.path.exists(prefs_path):
+            try:
+                with open(prefs_path, 'r', encoding='utf-8') as f:
+                    local_prefs = json.load(f)
+            except Exception:
+                pass
+
+        # Merge: server values override local, but preserve any keys the server
+        # doesn't know about (e.g. future local-only settings).
+        merged = {**local_prefs, **server_prefs}
+        with open(prefs_path, 'w', encoding='utf-8') as f:
+            json.dump(merged, f, indent=2)
+        print(f'[Dispatch] Preferences synced from server ({len(server_prefs)} keys)')
+    except Exception as e:
+        print(f'[Dispatch] Could not sync preferences from server: {e}')
+
+
 # ── Entry point ───────────────────────────────────────────────────
 
 def main():
@@ -458,6 +523,10 @@ def main():
         DISCORD_TOKEN    = os.getenv('DISCORD_TOKEN', '')
         DISCORD_ID       = os.getenv('DISCORD_ID', '')
         DISCORD_USERNAME = os.getenv('DISCORD_USERNAME', '')
+
+    # Sync preferences from server → local preferences.json so web-form changes
+    # take effect on next client restart without manual file editing.
+    _sync_server_prefs(DISCORD_ID, DISCORD_TOKEN)
 
     # Auto-install SCS telemetry plugin
     install_telemetry_plugin()

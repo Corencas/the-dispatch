@@ -17,6 +17,7 @@ import pystray
 from PIL import Image, ImageDraw
 from dispatcher import build_dispatch_messages
 from telemetry import start_telemetry_loop
+from city_db import build_city_db
 import assistant
 
 load_dotenv()
@@ -460,6 +461,10 @@ def main():
 
     # Auto-install SCS telemetry plugin
     install_telemetry_plugin()
+
+    # Build city coordinate database (base-game hardcoded + unencrypted ZIP mods)
+    ats_path = os.getenv('ATS_INSTALL_PATH', '') or None
+    assistant.city_db = build_city_db(ats_path)
 
     # Always use find_save_file() so autosaves are preferred over stale manual slots.
     # SAVE_PATH in .env is ignored — it was previously pointing to a manual save (slot 2)

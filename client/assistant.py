@@ -280,6 +280,9 @@ class AssistantState:
 # Module-level instance — imported and written to by client.py and telemetry.py
 state = AssistantState()
 
+# City coordinate database — populated by client.py on startup via build_city_db()
+city_db: dict = {}
+
 
 # ── Context builder ───────────────────────────────────────────────────────────
 
@@ -860,7 +863,18 @@ def query_claude(user_message: str, prefs: dict,
         dest_city  = dest_parts[-1].replace("_", " ").title() if dest_parts else nav_dst_city or "unknown"
         location_ctx = f"en_route_to={dest_city}"
     else:
-        location_ctx = f"garage_city={garage_city}"
+        if (pos_x != 0 or pos_z != 0) and city_db:
+            try:
+                from city_db import get_nearest_city as _gnc
+                nearest = _gnc(pos_x, pos_z, city_db)
+            except Exception:
+                nearest = None
+            if nearest:
+                location_ctx = f"nearest_city={nearest}, garage_city={garage_city}"
+            else:
+                location_ctx = f"garage_city={garage_city}"
+        else:
+            location_ctx = f"garage_city={garage_city}"
 
     system = (
         f"{SYSTEM_PROMPT}\n\n"

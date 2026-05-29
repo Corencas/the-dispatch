@@ -442,26 +442,33 @@ def build_context_summary(snapshot: dict, telemetry: dict | None = None) -> str:
     trailer_attached   = bool(trailer.get("id"))
 
     # ── Active job detection ──────────────────────────────────────────────────
-    # Priority 1 (live): telemetry cargo_mass > 0 or cargo string non-empty
-    #   → something is physically loaded right now.
-    # Priority 2 (save):  player.in_job == True from the save file.
-    # NEVER use trailer.active_destination or job_info_cargo — both persist
-    # after delivery and will report stale data.
-    player_in_job = player.get("in_job")   # True / False
+    # Priority 1 (live): telemetry cargo_mass > 0 or cargo string non-empty.
+    # Priority 2 (save): job_info_cargo + job_info_planned_distance_km both set
+    #   and non-zero — more reliable than in_job which can lag or be absent.
+    job_info_cargo_raw = (player.get("job_info_cargo") or "").strip()
+    try:
+        job_info_dist_raw = int(player.get("job_info_planned_distance_km") or 0)
+    except (TypeError, ValueError):
+        job_info_dist_raw = 0
+
     if live_cargo_mass > 0 or bool(live_cargo):
         has_active_job = True
         log.info(
             f"ACTIVE JOB DETECTION: telemetry cargo={live_cargo!r} "
             f"mass={live_cargo_mass} -> has_active_job=True (live)"
         )
-    elif player_in_job is True:
+    elif (job_info_cargo_raw and job_info_cargo_raw not in ("null", "nil")
+          and job_info_dist_raw > 0):
         has_active_job = True
-        log.info("ACTIVE JOB DETECTION: player.in_job=True -> has_active_job=True (save)")
+        log.info(
+            f"ACTIVE JOB DETECTION: job_info_cargo={job_info_cargo_raw!r} "
+            f"dist={job_info_dist_raw} -> has_active_job=True (save)"
+        )
     else:
         has_active_job = False
         log.info(
-            f"ACTIVE JOB DETECTION: no live cargo, player.in_job={player_in_job!r} "
-            f"-> has_active_job=False"
+            f"ACTIVE JOB DETECTION: no live cargo, job_info_cargo={job_info_cargo_raw!r} "
+            f"dist={job_info_dist_raw} -> has_active_job=False"
         )
 
     ctx["trailer_attached"] = trailer_attached
@@ -702,11 +709,19 @@ def _tool_current_job(snapshot: dict) -> dict:
     player = snapshot.get("player", {}) or {}
     trailer = snapshot.get("trailer", {}) or {}
 
-    if not player.get("in_job"):
+    job_cargo = (player.get("job_info_cargo") or "").strip()
+    try:
+        job_dist_km = int(player.get("job_info_planned_distance_km") or 0)
+    except (TypeError, ValueError):
+        job_dist_km = 0
+
+    active = bool(job_cargo and job_cargo not in ("null", "nil") and job_dist_km > 0)
+    log.info(f"Tool current_job: job_info_cargo={job_cargo!r} dist_km={job_dist_km} -> active={active}")
+
+    if not active:
         return {"active": False, "message": "No active job."}
 
     job_target  = player.get("job_info_target") or trailer.get("active_destination") or ""
-    job_dist_km = int(player.get("job_info_planned_distance_km") or 0)
     job_cargo   = player.get("job_info_cargo") or "unknown"
     job_urgency = player.get("job_info_urgency", "0") or "0"
 
@@ -790,17 +805,49 @@ def query_claude(user_message: str, prefs: dict,
         log.warning("ANTHROPIC_API_KEY not set")
         return _FALLBACK['no_key']
 
+    # ── Diagnostic logging — runs on every query ─────────────────────────────
+    player = snapshot.get("player", {}) or {}
+    log.info(f"DIAG player (full): {player!r}")
+    log.info(f"DIAG snapshot.cities={snapshot.get('cities')!r}")
+    log.info(f"DIAG snapshot.current_city={snapshot.get('current_city')!r}")
+    log.info(f"DIAG snapshot.city={snapshot.get('city')!r}")
+    first_job = (snapshot.get("jobs") or [{}])[0]
+    log.info(f"DIAG jobs[0].source_city={first_job.get('source_city')!r}")
+    log.info(f"DIAG telemetry keys={list(telemetry.keys()) if telemetry else []!r}")
+
     # ── Minimal system context (no big JSON dump) ─────────────────────────────
+    # City: try player.current_city (parsed from save), then snapshot top-level,
+    # then fall back to first completed job's source city.
     current_city = (
-        snapshot.get("current_city") or snapshot.get("city") or "unknown"
+        player.get("current_city")
+        or snapshot.get("current_city")
+        or snapshot.get("city")
+        or first_job.get("source_city")
+        or "unknown"
     )
+
     trailer = snapshot.get("trailer", {}) or {}
     trailer_type = trailer.get("body_type") or "unknown"
 
-    player = snapshot.get("player", {}) or {}
+    # Active job detection — job_info_cargo + job_info_planned_distance_km are
+    # more reliable than in_job which can lag or be absent in save files.
     live_cargo      = (telemetry.get("cargo") or "").strip()
     live_cargo_mass = float(telemetry.get("cargo_mass") or 0)
-    has_active_job  = bool(live_cargo_mass > 0 or live_cargo or player.get("in_job") is True)
+    job_info_cargo = (player.get("job_info_cargo") or "").strip()
+    try:
+        job_info_dist = int(player.get("job_info_planned_distance_km") or 0)
+    except (TypeError, ValueError):
+        job_info_dist = 0
+    has_active_job = bool(
+        live_cargo_mass > 0
+        or live_cargo
+        or (job_info_cargo and job_info_cargo not in ("null", "nil") and job_info_dist > 0)
+    )
+    log.info(
+        f"DIAG active_job: live_cargo={live_cargo!r} mass={live_cargo_mass} "
+        f"job_info_cargo={job_info_cargo!r} job_info_dist={job_info_dist} "
+        f"-> has_active_job={has_active_job}"
+    )
 
     system = (
         f"{SYSTEM_PROMPT}\n\n"

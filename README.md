@@ -2,6 +2,9 @@
 
 Free, unlimited fleet management for American Truck Simulator and Euro Truck Simulator 2.
 
+![Landing page](screenshots/landing.png)
+![Fleet dashboard](screenshots/dashboard.png)
+
 ## Features
 
 - Discord OAuth — drivers log in with Discord, no accounts to manage

@@ -44,3 +44,5 @@ dist/
 
 # Logs
 *.log
+
+client/voice_history.json

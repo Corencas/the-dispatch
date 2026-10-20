@@ -26,3 +26,21 @@ uploads/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code / AI tool files
+.claude/
+
+# Game save files
+*.sii
+
+# Local secrets and notes (never commit these)
+discordappdispatchcodes.txt
+*secret*
+*.key
+
+# PyInstaller builds
+build/
+dist/
+
+# Logs
+*.log

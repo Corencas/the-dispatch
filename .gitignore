@@ -46,3 +46,4 @@ dist/
 *.log
 
 client/voice_history.json
+*.exe

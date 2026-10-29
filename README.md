@@ -2,6 +2,8 @@
 
 Free, unlimited fleet management for American Truck Simulator and Euro Truck Simulator 2.
 
+**Status:** work in progress. It runs locally on my PC; it isn't deployed anywhere yet.
+
 ![Landing page](screenshots/landing.png)
 ![Fleet dashboard](screenshots/dashboard.png)
 
@@ -13,6 +15,8 @@ Free, unlimited fleet management for American Truck Simulator and Euro Truck Sim
 - Driver leaderboards — global and per-VTC, sorted by distance / jobs / earnings
 - Discord bot — `/mystats`, `/leaderboard`, `/fleet` slash commands
 - Live telemetry — speed, fuel, cargo state pushed in real time from the SDK
+- Voice assistant — push-to-talk, OpenAI Whisper for speech-to-text, Claude for answers using live game data, spoken back with ElevenLabs (falls back to free edge-tts if no key is set)
+- In-game overlay — a small always-on-top window that shows what you said and the assistant's reply
 
 ## Architecture
 
@@ -61,7 +65,9 @@ python bot.py
 
 Set `DISCORD_GUILD_ID` in `bot/.env` to your server's ID for instant slash command registration during testing. Remove it (or leave blank) for global registration.
 
-## Deploy to Railway
+## Deploy to Railway (planned)
+
+I haven't deployed it yet. These are the steps I'm planning to use.
 
 ### 1 — Create the project
 
@@ -118,5 +124,10 @@ In your Railway project → **New Service** → **GitHub Repo** (same repo) → 
 - **Server**: Python · Flask · SQLAlchemy · Gunicorn
 - **Database**: SQLite (local) · PostgreSQL (production via Railway)
 - **Auth**: Discord OAuth2
-- **Client**: Watchdog · edge-tts · truck-telemetry SDK
+- **Client**: Watchdog · truck-telemetry SDK · tkinter overlay
+- **Voice assistant**: OpenAI Whisper · Claude API · ElevenLabs / edge-tts
 - **Bot**: discord.py 2.x · aiohttp
+
+## How I built it
+
+I built this with Claude Code. I planned the features, tested everything in-game, and worked through the bugs, most of which you can see in the commit history.
